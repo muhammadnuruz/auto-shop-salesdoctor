@@ -1,0 +1,100 @@
+name: auto-shop
+
+x-backend: &backend
+  build:
+    context: ./backend
+    args:
+      INSTALL_DEV: "false"
+  env_file: .env
+  restart: unless-stopped
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  api:
+    <<: *backend
+    command: ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    <<: *backend
+    command: ["arq", "app.workers.settings.WorkerSettings"]
+    healthcheck:
+      test: ["CMD", "arq", "--check", "app.workers.settings.WorkerSettings"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Dev/test tooling (pytest, ruff, mypy). Source is bind-mounted; caches go to /tmp.
+  test:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      args:
+        INSTALL_DEV: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ENV: test
+      # separate database on the dev db service; created by tests/conftest.py
+      TEST_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-autoshop}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/autoshop_test
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTEST_ADDOPTS: "-p no:cacheprovider"
+      RUFF_CACHE_DIR: /tmp/ruff_cache
+      MYPY_CACHE_DIR: /tmp/mypy_cache
+    volumes:
+      - ./backend:/app
+
+  # Static SPA + /api reverse proxy. Opt-in: docker compose --profile web up -d --build web
+  web:
+    profiles: ["web"]
+    build:
+      context: ./frontend
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:8080:80"
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-autoshop}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-autoshop}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
