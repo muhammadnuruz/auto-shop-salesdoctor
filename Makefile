@@ -51,8 +51,6 @@ E2E = POSTGRES_PASSWORD=e2e-only-password $(COMPOSE) -p autoshop-e2e \
 	-f docker-compose.yml -f docker-compose.e2e.yml
 
 e2e-up:
-	$(E2E) --profile web up -d --build --wait db redis fake-sd
-	$(E2E) run --rm api alembic upgrade head
 	$(E2E) --profile web up -d --build --wait
 
 # usage: make e2e-seed [LOAD=1]

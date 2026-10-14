@@ -12,8 +12,23 @@ x-backend: &backend
       condition: service_healthy
     redis:
       condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
 
 services:
+  # one-shot: api/worker start only after the schema is at head (no crash loop on a fresh DB)
+  migrate:
+    build:
+      context: ./backend
+      args:
+        INSTALL_DEV: "false"
+    env_file: .env
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
   api:
     <<: *backend
     command: ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

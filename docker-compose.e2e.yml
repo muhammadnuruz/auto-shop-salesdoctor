@@ -37,6 +37,9 @@ x-e2e-env: &e2e-env
   RL_ADMIN_USER_PER_HOUR: "10000"
 
 services:
+  migrate:
+    env_file: !reset []
+    environment: *e2e-env
   api:
     env_file: !reset []
     environment: *e2e-env

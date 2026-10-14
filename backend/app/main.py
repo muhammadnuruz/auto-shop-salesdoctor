@@ -9,12 +9,14 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 
 from app.api.admin import router as admin_router
+from app.api.client_errors import router as client_errors_router
 from app.api.shop import router as shop_router
 from app.api.shop_catalog import router as shop_catalog_router
 from app.api.shop_orders import router as shop_orders_router
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
+from app.core.observability import init_sentry
 from app.db.session import create_engine, create_sessionmaker
 from app.integrations.salesdoctor import SalesDoctorClient, TokenStore
 from app.services.jobs import ArqJobQueue
@@ -26,6 +28,7 @@ log = get_logger(__name__)
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.LOG_LEVEL)
+    init_sentry(settings, "api")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -98,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(shop_catalog_router)
     app.include_router(shop_orders_router)
     app.include_router(admin_router)
+    app.include_router(client_errors_router)
 
     @app.get("/health", tags=["health"])
     async def health() -> dict[str, str]:

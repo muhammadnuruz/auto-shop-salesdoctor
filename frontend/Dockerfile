@@ -4,6 +4,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY . .
+ARG VITE_APP_RELEASE=""
+ENV VITE_APP_RELEASE=$VITE_APP_RELEASE
 RUN npm run build
 
 FROM nginx:1.27-alpine

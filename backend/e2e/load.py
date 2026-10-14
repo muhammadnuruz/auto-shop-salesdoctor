@@ -25,7 +25,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-import asyncpg  # type: ignore[import-untyped]
+import asyncpg
 import httpx
 from redis.asyncio import Redis
 

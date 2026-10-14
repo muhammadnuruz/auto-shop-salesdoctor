@@ -125,6 +125,12 @@ class Settings(BaseSettings):
     ADMIN_USER_DELAY_BASE: float = Field(0.5, ge=0)
     ADMIN_USER_DELAY_MAX: float = Field(8.0, ge=0)
 
+    # --- observability ---
+    SENTRY_DSN: SecretStr | None = None  # error tracking off when unset
+    SENTRY_TRACES_SAMPLE_RATE: float = Field(0.0, ge=0, le=1)
+    APP_RELEASE: str = ""  # e.g. git sha, shown in Sentry
+    RL_CLIENT_ERRORS_PER_MIN: int = Field(20, ge=1)  # browser error reports per IP
+
     # retention (daily arq job)
     SESSION_PURGE_AFTER_DAYS: int = Field(7, ge=1)
     AUDIT_RETENTION_DAYS: int = Field(365, ge=30)

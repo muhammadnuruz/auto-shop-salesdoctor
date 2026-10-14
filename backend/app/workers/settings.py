@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
+from app.core.observability import init_sentry
 from app.db.session import create_engine, create_sessionmaker
 from app.integrations.salesdoctor import SalesDoctorClient, TokenStore
 from app.models import SyncRun
@@ -170,6 +171,7 @@ def _cron_jobs() -> list[CronJob]:
 
 async def startup(ctx: dict[str, Any]) -> None:
     configure_logging(settings.LOG_LEVEL)
+    init_sentry(settings, "worker")
     http = httpx.AsyncClient(timeout=settings.SD_TIMEOUT)
     engine = create_engine(
         settings.DATABASE_URL,
