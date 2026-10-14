@@ -29,7 +29,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        engine = create_engine(settings.DATABASE_URL)
+        engine = create_engine(
+            settings.DATABASE_URL,
+            pool_size=settings.DB_POOL_SIZE,
+            max_overflow=settings.DB_MAX_OVERFLOW,
+        )
         redis: Redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
         http = httpx.AsyncClient(
             timeout=settings.SD_TIMEOUT,

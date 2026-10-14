@@ -63,10 +63,11 @@ async def apply_to_mirror(
         ).all()
     )
     now = utcnow()
+    # fixed lock order (by product id): concurrent upserts never deadlock each other
+    pairs = sorted((ids[sd_id], qty) for sd_id, qty in wanted.items() if sd_id in ids)
     rows = [
-        {"warehouse_id": wh_id, "product_id": ids[sd_id], "quantity": qty, "synced_at": now}
-        for sd_id, qty in wanted.items()
-        if sd_id in ids
+        {"warehouse_id": wh_id, "product_id": pid, "quantity": qty, "synced_at": now}
+        for pid, qty in pairs
     ]
     await bulk_upsert(db, SdStock, rows, conflict=["warehouse_id", "product_id"])
     if zero_missing:

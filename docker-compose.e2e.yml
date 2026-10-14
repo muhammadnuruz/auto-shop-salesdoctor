@@ -14,6 +14,10 @@ x-e2e-env: &e2e-env
   SD_LOGIN: e2e
   SD_PASSWORD: e2e
   SYNC_ENABLED: "false"
+  # uvicorn reads WEB_CONCURRENCY; 4 processes x (5 + 5) + worker stays well below 100 conns
+  WEB_CONCURRENCY: "4"
+  DB_POOL_SIZE: "5"
+  DB_MAX_OVERFLOW: "5"
   APP_SECRET_KEY: e2e-only-secret-key-Qm7vX2pLr9TzK4bNc8WdHs1Yf
   ALLOWED_ORIGINS: http://127.0.0.1:8080,http://localhost:8080
   # the browser talks to nginx in the web container; trust it for X-Forwarded-For

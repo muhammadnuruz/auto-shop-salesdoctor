@@ -64,3 +64,7 @@ e2e: e2e-up e2e-seed
 
 e2e-down:
 	$(E2E) --profile web down -v
+
+# usage: make load [ARGS="--shops 50 --duration 120"]   (needs: make e2e-up e2e-seed LOAD=1)
+load:
+	$(E2E) run --rm api python -m e2e.load --think-min 1 --think-max 4 --sd-latency 300 $(ARGS)

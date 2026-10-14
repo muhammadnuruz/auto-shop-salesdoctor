@@ -544,11 +544,15 @@ async def _submit_locked(
             db, order, st=st, admin=admin_mode, stock_override=fresh, credit=credit, live=True
         )
         if fresh is not None:
+            # Only this order's products: this transaction stays open across the SD call, and
+            # upserting the whole warehouse here would hold row locks on every sd_stock row,
+            # serialising all concurrent submits. The full warehouse refresh runs as a job.
+            mine = [v.product.sd_id for v in view.lines]
             await apply_to_mirror(
                 db,
                 order.warehouse_sd_id,
-                fresh,
-                force_zero=[v.product.sd_id for v in view.lines],
+                {ref: fresh[ref] for ref in mine if ref in fresh},
+                force_zero=mine,
             )
         problems = collect_problems(view, options, client, admin=admin_mode)
     except BaseException:

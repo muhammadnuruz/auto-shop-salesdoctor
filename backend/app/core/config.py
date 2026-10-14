@@ -48,6 +48,9 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "postgresql+asyncpg://autoshop:autoshop@localhost:5432/autoshop"
     REDIS_URL: str = "redis://localhost:6379/0"
+    # per process; total = processes (WEB_CONCURRENCY api workers + 1 arq worker) x (size+overflow)
+    DB_POOL_SIZE: int = Field(10, ge=1, le=100)
+    DB_MAX_OVERFLOW: int = Field(10, ge=0, le=100)
 
     SD_BASE_URL: str = "https://example.salesdoc.io/api/v2/"
     SD_LOGIN: str = ""

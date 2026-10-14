@@ -173,6 +173,8 @@ async def startup(ctx: dict[str, Any]) -> None:
     http = httpx.AsyncClient(timeout=settings.SD_TIMEOUT)
     engine = create_engine(
         settings.DATABASE_URL,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
         server_settings={
             "lock_timeout": "5000",
             "idle_in_transaction_session_timeout": "60000",
