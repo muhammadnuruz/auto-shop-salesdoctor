@@ -1,0 +1,64 @@
+# E2E / load-test stack: fake Sales Doctor + seeded throw-away database. Never for production.
+#
+#   docker compose -p autoshop-e2e -f docker-compose.yml -f docker-compose.e2e.yml \
+#     --profile web up -d --build
+#   docker compose -p autoshop-e2e -f docker-compose.yml -f docker-compose.e2e.yml \
+#     run --rm api python -m e2e.seed --admin-password "$E2E_ADMIN_PASSWORD" [--load]
+#
+# (or simply `make e2e-up` / `make e2e-seed` / `make e2e` — see Makefile)
+x-e2e-env: &e2e-env
+  ENV: local
+  DATABASE_URL: postgresql+asyncpg://autoshop:e2e-only-password@db:5432/autoshop_e2e
+  REDIS_URL: redis://redis:6379/0
+  SD_BASE_URL: http://fake-sd:9000/api/v2/
+  SD_LOGIN: e2e
+  SD_PASSWORD: e2e
+  SYNC_ENABLED: "false"
+  APP_SECRET_KEY: e2e-only-secret-key-Qm7vX2pLr9TzK4bNc8WdHs1Yf
+  ALLOWED_ORIGINS: http://127.0.0.1:8080,http://localhost:8080
+  # the browser talks to nginx in the web container; trust it for X-Forwarded-For
+  TRUSTED_PROXIES: 172.16.0.0/12
+  # generous limits: many test shops share one IP during load tests
+  RL_SHOP_IP_PER_MIN: "10000"
+  RL_SHOP_IP_PER_HOUR: "100000"
+  RL_SHOP_SUBNET_PER_MIN: "10000"
+  RL_SHOP_SUBNET_PER_HOUR: "100000"
+  RL_SHOP_SUBMIT_PER_MIN: "1000"
+  RL_SHOP_FRESH_STOCK_PER_MIN: "1000"
+  RL_ADMIN_IP_PER_MIN: "1000"
+  RL_ADMIN_IP_PER_HOUR: "10000"
+  RL_ADMIN_SUBNET_PER_MIN: "1000"
+  RL_ADMIN_SUBNET_PER_HOUR: "10000"
+  RL_ADMIN_USER_PER_MIN: "1000"
+  RL_ADMIN_USER_PER_HOUR: "10000"
+
+services:
+  api:
+    env_file: !reset []
+    environment: *e2e-env
+    ports: !override
+      - "127.0.0.1:18000:8000"
+  worker:
+    env_file: !reset []
+    environment: *e2e-env
+  db:
+    environment:
+      POSTGRES_USER: autoshop
+      POSTGRES_PASSWORD: e2e-only-password
+      POSTGRES_DB: autoshop_e2e
+  fake-sd:
+    build:
+      context: ./backend
+      args:
+        INSTALL_DEV: "false"
+    command: ["uvicorn", "e2e.fake_sd:app", "--host", "0.0.0.0", "--port", "9000"]
+    ports:
+      - "127.0.0.1:19000:9000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9000/health', timeout=3)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  web:
+    ports: !override
+      - "127.0.0.1:8080:80"
