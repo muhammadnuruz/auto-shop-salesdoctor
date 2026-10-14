@@ -1,6 +1,6 @@
 # Handoff — Auto-Shop ↔ Sales Doctor
 
-Status as of 2026-10-14. Read this file fully, then `PLAN.md` (Uzbek; sections 1.1–1.3 hold the owner's decisions and verified live API facts), `README.md`, `frontend/README.md`.
+Status as of 2026-10-14 (updated at the end of the second session). Read this file fully, then `PLAN.md` (Uzbek; sections 1.1–1.3 hold the owner's decisions and verified live API facts), `README.md`, `frontend/README.md`.
 
 ## 1. What the product is
 
@@ -34,7 +34,7 @@ A web app where shops (= "clients" in the dealer's Sales Doctor (SD) CRM, server
 
 ## 4. Architecture & repo layout
 
-- `backend/` — FastAPI (Python 3.12 in Docker), SQLAlchemy 2 async + Alembic (head **0005**), Postgres 16 (pg_trgm), Redis 7, arq worker. Key packages: `app/integrations/salesdoctor` (client, errors incl. `SDOutcomeUnknownError`, token store), `app/sync` (mirror sync with completeness checks + deactivation cap), `app/domain` (phone, link_settings, permissions, quantity, order_rules), `app/services` (sessions, eligibility, admin_auth, audit, retention, catalog, orders, order_flow, order_jobs, order_import, stock_fresh), `app/api` (shop, shop_catalog, shop_orders, admin/*, schemas.py), `app/workers/settings.py` (crons), `app/cli.py` (`create-superadmin`), `scripts/e2e_order.py` (live E2E, dry-run unless `--live`).
+- `backend/` — FastAPI (Python 3.12 in Docker), SQLAlchemy 2 async + Alembic (head **0007**), Postgres 16 (pg_trgm), Redis 7, arq worker. Key packages: `app/integrations/salesdoctor` (client, errors incl. `SDOutcomeUnknownError`, token store), `app/sync` (mirror sync with completeness checks + deactivation cap), `app/domain` (phone, link_settings, permissions, quantity, order_rules), `app/services` (sessions, eligibility, admin_auth, audit, retention, catalog, orders, order_flow, order_jobs, order_import, stock_fresh), `app/api` (shop, shop_catalog, shop_orders, admin/*, schemas.py), `app/workers/settings.py` (crons), `app/cli.py` (`create-superadmin`), `scripts/e2e_order.py` (live E2E, dry-run unless `--live`).
 - `frontend/` — Vite + React 18 + TS strict + MUI v6 + TanStack Query v5 + react-router v6 + RHF/zod + i18next (ru/uz) + MSW/Vitest; `npm run gen:api` regenerates `src/api/schema.d.ts` from the running API. Docker: nginx serving SPA + `/api` proxy (`web` service, profile `web`, 127.0.0.1:8080).
 - Commands: `docker compose up -d --build` · `make migrate` · `make test` · `make lint` · `make superadmin u=NAME` · `docker compose --profile web up -d --build --no-deps web` · frontend: `npm run lint && npm run typecheck && npm test -- --run && npm run build`.
 - Secrets: `.env` (SD_BASE_URL, SD_LOGIN, SD_PASSWORD, APP_SECRET_KEY, TOTP_ENC_KEY, DB creds; **not in git**), `.admin-credentials` (dev superadmin; **not in git, never print it**). In a fresh environment recreate `.env` from `.env.example` + secrets provided by the owner, then `make superadmin u=admin`.
@@ -43,22 +43,30 @@ A web app where shops (= "clients" in the dealer's Sales Doctor (SD) CRM, server
 
 | Area | State |
 |---|---|
-| Backend tests | 640 passing; ruff + mypy clean |
-| Frontend tests | 86+ passing; eslint/typecheck/build clean |
-| Reviews done & all findings fixed | SD client (18), DB/sync (17, incl. 1 critical), auth security (11), order-flow integrity (12, incl. 5 high) |
-| Live verification | Read-only SD calls, full mirror sync, shop login on a smoke link. **Not yet done: live end-to-end order through the app** |
+| Backend tests | 687+ passing; ruff + format + mypy (app, tests, e2e) clean |
+| Frontend tests | 101 passing (vitest); eslint/typecheck/prettier/build clean |
+| E2E | 7 Playwright tests (desktop + mobile) green against the docker stack with the fake SD |
+| Load | 50 shops: realistic profile all p95 within budget, 0 errors (`docs/LOAD_TEST.md`) |
+| Reviews done & all findings fixed | SD client (18), DB/sync (17), auth security (11), order-flow integrity (12), admin remainder (10 + 10 in a second round), E2E/load/prod (see git log) |
+| Live verification | Read-only SD calls, full mirror sync, shop login on a smoke link. **Not yet done: live end-to-end order through the app (item 2 below, needs owner approval)** |
 
-Working method that produced this quality (keep it): implement → independent review agent (reviewer / db-review / security-review / deep-reasoner) → fix every finding with a regression test → orchestrator re-runs tests itself → table report to the owner (owner reads Uzbek; reports in Uzbek, code/docs in English).
+Working method that produced this quality (keep it): implement → independent review agent → fix every finding with a regression test → orchestrator re-runs tests itself → table report to the owner (owner reads Uzbek; reports in Uzbek, code/docs in English).
 
 ## 6. Remaining work (in order)
 
-1. **Frontend adaptation (may already be done — check `git log`/diff):** regenerate API types and use the new backend features: `/me.balance_by_type` + `last_price_type_sd_id`; `/api/admin/refs` allowed for order roles; `POST /api/admin/orders/{id}/preview` for live recalculation in the admin editor; `/api/admin/products?price_type=&warehouse=` → `price`, `stock_qty`; admin status/DELETE 202 now return the full `AdminOrderOut`; datetimes serialize with `Z`; fix truncated TSD scanner placeholder.
-2. **Live E2E order (requires the owner's explicit approval in chat before running):** create a temporary link for «Тест Дилшод», run `backend/scripts/e2e_order.py --live` (login → draft → +1 `d0_2784` → submit → verify SD order + stock −1 → cancel → stock restored → admin delete → archive link). Report stock before/after.
-3. **Admin panel remainder (PLAN.md 5.1):** audit log API + UI (filters by actor/entity/date); reports (sales by client/product/category/link/agent over a period, xlsx export); settings page (SD connection status, sync intervals, phone-flag threshold); Telegram notifications (new order, failed / outcome_unknown / reconcile_exhausted, sync errors) via a bot token setting; link statistics detail (logins, orders, sum per link).
-4. **Playwright E2E** for the main flows against the docker stack with a fake SD (respx-equivalent mock server) — shop login → order → submit; admin link CRUD; admin order edit.
-5. **Load test** (e.g. locust/k6): 50 concurrent shops browsing catalog + editing + submitting against fake SD; check p95 latencies and DB/Redis load.
-6. **Production readiness:** prod compose (no dev deps, `ENV=production`, `ALLOWED_ORIGINS`, `TRUSTED_PROXIES`, `COOKIE_SECURE=true`), nginx + HTTPS (Let's Encrypt), Postgres backups (daily dump + retention + restore test), Sentry (backend + frontend), structured log shipping, healthcheck-based restart, CI (GitHub Actions: backend lint+test with Postgres/Redis services, frontend lint/typecheck/test/build, docker build).
-7. **Docs:** operator manual in Uzbek (admin panel: links, QR, blocking phones, orders, sync) and a short shop guide (RU/UZ); review the Uzbek UI translations.
+1. ~~Frontend adaptation~~ — done.
+2. **Live E2E order (requires the owner's explicit approval in chat before running):** create a temporary link for «Тест Дилшод», run `backend/scripts/e2e_order.py --live` (login → draft → +1 `d0_2784` → submit → verify SD order + stock −1 → cancel → stock restored → admin delete → archive link). Report stock before/after. Needs the real secrets in the environment (SD_BASE_URL, SD_LOGIN, SD_PASSWORD, APP_SECRET_KEY, TOTP_ENC_KEY).
+3. ~~Admin panel remainder~~ — done: audit log (API + UI), sales reports + xlsx, settings page (SD status, DB-configurable sync intervals, phone-flag threshold, Telegram notifier with delivery health), link statistics.
+4. ~~Playwright E2E~~ — done (`frontend/e2e`, `backend/e2e/fake_sd.py`, `make e2e`).
+5. ~~Load test~~ — done (`backend/e2e/load.py`, `make load`); fixed: multi-process API, submit no longer locks the whole warehouse's stock rows.
+6. ~~Production readiness~~ — done (`docker-compose.prod.yml`, `deploy/`, `docs/DEPLOY.md`, `.github/workflows/ci.yml`). Still to do on a real server: DNS + `deploy/init-letsencrypt.sh`, off-server copy of `BACKUP_DIR`, `SENTRY_DSN`, Telegram bot.
+7. ~~Docs~~ — done (`docs/operator-manual-uz.md`, `docs/shop-guide.md`, Uzbek UI terminology pass).
+
+Next ideas (not requested yet): CI run on GitHub (workflow runs on PRs to main), owner walkthrough of the UI in Uzbek, per-product `getStock` filtering if SD supports it (submit currently reads the whole warehouse).
+
+### Local cloud-sandbox notes
+- Docker Hub may rate-limit pulls: pull from `mirror.gcr.io/library/<image>` and `docker tag`.
+- Builds behind the session's TLS-intercepting proxy need its CA: a local, uncommitted compose override (scratchpad) adds the CA to the build stages only.
 
 ## 7. Rules
 
