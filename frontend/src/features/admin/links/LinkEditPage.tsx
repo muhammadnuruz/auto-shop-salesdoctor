@@ -17,6 +17,7 @@ import { useCan } from '../AdminContext';
 import { LinkClientsPanel } from './LinkClientsPanel';
 import { LinkForm } from './LinkForm';
 import { formToCreate, formToUpdate, type LinkFormValues } from './schema';
+import { LinkStatsPanel } from './LinkStatsPanel';
 import { SharePanel } from './SharePanel';
 import { stateColor } from './utils';
 
@@ -120,6 +121,7 @@ export function LinkEditPage() {
         )}
         <Stack spacing={2}>
           <SharePanel link={data} warnings={warnings} />
+          <LinkStatsPanel linkId={id} />
           {data.client_scope === 'selected' && <LinkClientsPanel linkId={id} canWrite={canWrite} />}
         </Stack>
       </Box>

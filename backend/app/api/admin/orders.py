@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AdminContext, DbDep, MetaDep, ServicesDep, require
 from app.api.schemas import AdminOrderListOut, AdminOrderOut
+from app.core.xlsx import cell
 from app.domain.quantity import MAX_BLOCKS, MAX_PIECES
 from app.integrations.salesdoctor import SDError
 from app.models import AccessLink, SdClient, ShopOrder, ShopOrderEvent
@@ -222,11 +223,7 @@ async def export_orders(
     rows = await _rows(db, f.conds, EXPORT_LIMIT, 0)
     names = await svc.reference_names(db, [r[0] for r in rows])
 
-    def safe(value: Any) -> Any:
-        # neutralise spreadsheet formula injection from user-controlled text
-        if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
-            return "'" + value
-        return value
+    safe = cell
 
     wb = Workbook(write_only=True)
     ws = wb.create_sheet("orders")

@@ -652,7 +652,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Link Stats */
+        /**
+         * Link Stats
+         * @description Usage of one link: logins (shop sessions), unique shops, orders and sums per day.
+         */
         get: operations["link_stats_api_admin_links__link_id__stats_get"];
         put?: never;
         post?: never;
@@ -1027,6 +1030,112 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Audit */
+        get: operations["list_audit_api_admin_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/audit/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Audit Facets
+         * @description Values for the filter dropdowns.
+         */
+        get: operations["audit_facets_api_admin_audit_facets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/reports/sales": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sales Report */
+        get: operations["sales_report_api_admin_reports_sales_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/reports/sales.xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sales Report Xlsx */
+        get: operations["sales_report_xlsx_api_admin_reports_sales_xlsx_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Settings */
+        get: operations["get_settings_api_admin_settings_get"];
+        /** Update Settings */
+        put: operations["update_settings_api_admin_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/settings/telegram/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Telegram Test */
+        post: operations["telegram_test_api_admin_settings_telegram_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -1235,6 +1344,56 @@ export interface components {
             mode: "fixed" | "choice" | "client_assigned";
             /** Ids */
             ids?: string[];
+        };
+        /** AuditFacets */
+        AuditFacets: {
+            /** Actions */
+            actions: string[];
+            /** Entity Types */
+            entity_types: string[];
+            /** Actors */
+            actors: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** AuditOut */
+        AuditOut: {
+            /** Id */
+            id: number;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Actor Type */
+            actor_type: string;
+            /** Actor Id */
+            actor_id: number | null;
+            /** Actor Name */
+            actor_name: string | null;
+            /** Action */
+            action: string;
+            /** Entity Type */
+            entity_type: string | null;
+            /** Entity Id */
+            entity_id: string | null;
+            /** Before */
+            before: unknown;
+            /** After */
+            after: unknown;
+            /** Ip */
+            ip: string | null;
+            /** User Agent */
+            user_agent: string | null;
+            /** Request Id */
+            request_id: string | null;
+        };
+        /** AuditPage */
+        AuditPage: {
+            /** Total */
+            total: number;
+            /** Items */
+            items: components["schemas"]["AuditOut"][];
         };
         /** BalanceByType */
         BalanceByType: {
@@ -2219,6 +2378,28 @@ export interface components {
             /** Client Categories */
             client_categories: components["schemas"]["ClientIdCount"][];
         };
+        /** ReportRow */
+        ReportRow: {
+            /** Key */
+            key: string | null;
+            /** Name */
+            name: string | null;
+            /** Orders */
+            orders: number;
+            /** Qty */
+            qty: number | null;
+            /** Sum */
+            sum: number;
+        };
+        /** ReportTotals */
+        ReportTotals: {
+            /** Orders */
+            orders: number;
+            /** Qty */
+            qty: number | null;
+            /** Sum */
+            sum: number;
+        };
         /** RepricedLine */
         RepricedLine: {
             /** Product Ref */
@@ -2227,6 +2408,29 @@ export interface components {
             old: number | null;
             /** New */
             new: number | null;
+        };
+        /** SalesReport */
+        SalesReport: {
+            /**
+             * Group By
+             * @enum {string}
+             */
+            group_by: "client" | "product" | "category" | "link" | "agent" | "day";
+            /**
+             * Date From
+             * Format: date
+             */
+            date_from: string;
+            /**
+             * Date To
+             * Format: date
+             */
+            date_to: string;
+            totals: components["schemas"]["ReportTotals"];
+            /** Rows */
+            rows: components["schemas"]["ReportRow"][];
+            /** Truncated */
+            truncated: boolean;
         };
         /** ScanIn */
         ScanIn: {
@@ -2248,6 +2452,21 @@ export interface components {
             slug: string;
             /** Client Ref */
             client_ref: string;
+        };
+        /** SettingsUpdate */
+        SettingsUpdate: {
+            /** Sync Intervals */
+            sync_intervals?: {
+                [key: string]: number | null;
+            } | null;
+            /** Phone Max Clients */
+            phone_max_clients?: number | null;
+            /**
+             * Reset Phone Max Clients
+             * @default false
+             */
+            reset_phone_max_clients: boolean;
+            telegram?: components["schemas"]["TelegramUpdate"] | null;
         };
         /** ShopOrderListOut */
         ShopOrderListOut: {
@@ -2300,6 +2519,17 @@ export interface components {
             items: number | null;
             /** Error */
             error: string | null;
+        };
+        /** TelegramUpdate */
+        TelegramUpdate: {
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Bot Token */
+            bot_token?: string | null;
+            /** Chat Ids */
+            chat_ids?: string[] | null;
+            /** Events */
+            events?: ("new_order" | "order_failed" | "outcome_unknown" | "reconcile_exhausted" | "sync_error")[] | null;
         };
         /** TopClient */
         TopClient: {
@@ -3932,7 +4162,9 @@ export interface operations {
     };
     link_stats_api_admin_links__link_id__stats_get: {
         parameters: {
-            query?: never;
+            query?: {
+                days?: number;
+            };
             header?: never;
             path: {
                 link_id: number;
@@ -4750,6 +4982,216 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    list_audit_api_admin_audit_get: {
+        parameters: {
+            query?: {
+                actor_type?: ("admin" | "shop" | "system") | null;
+                actor_id?: number | null;
+                action?: string | null;
+                entity_type?: string | null;
+                entity_id?: string | null;
+                date_from?: string | null;
+                date_to?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    audit_facets_api_admin_audit_facets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditFacets"];
+                };
+            };
+        };
+    };
+    sales_report_api_admin_reports_sales_get: {
+        parameters: {
+            query?: {
+                group_by?: "client" | "product" | "category" | "link" | "agent" | "day";
+                date_from?: string | null;
+                date_to?: string | null;
+                link_id?: number | null;
+                client_id?: number | null;
+                agent?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SalesReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sales_report_xlsx_api_admin_reports_sales_xlsx_get: {
+        parameters: {
+            query?: {
+                group_by?: "client" | "product" | "category" | "link" | "agent" | "day";
+                date_from?: string | null;
+                date_to?: string | null;
+                link_id?: number | null;
+                client_id?: number | null;
+                agent?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_settings_api_admin_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    update_settings_api_admin_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    telegram_test_api_admin_settings_telegram_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };

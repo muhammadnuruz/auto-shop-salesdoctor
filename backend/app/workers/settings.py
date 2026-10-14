@@ -4,16 +4,19 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any, ClassVar
 
 import httpx
 from arq.connections import RedisSettings
 from arq.cron import CronJob, cron
+from sqlalchemy import func, select
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import create_engine, create_sessionmaker
 from app.integrations.salesdoctor import SalesDoctorClient, TokenStore
+from app.models import SyncRun
 from app.services import app_settings, notifier, order_jobs
 from app.services.jobs import ArqJobQueue, JobQueue
 from app.services.retention import purge_auth_data
@@ -90,26 +93,39 @@ DISPATCH_EVERY = 10  # seconds; granularity of the DB-configurable sync interval
 
 
 async def dispatch_syncs(ctx: dict[str, Any]) -> list[str]:
-    """Enqueue each entity's sync when its interval slot starts.
+    """Enqueue each entity's sync once per interval slot.
 
-    Intervals come from ``app_setting`` (admin panel) with env defaults. The arq job id embeds
-    the slot, so several workers (or a slow tick) never enqueue the same slot twice; a sync
-    that is still running makes the next one return ``skipped`` (per-entity Redis lock).
+    Intervals come from ``app_setting`` (admin panel) with env defaults. Each slot is claimed
+    with a Redis ``SET NX`` key, so several workers never enqueue the same slot twice, and a
+    tick that runs late (busy worker) still runs the slot instead of skipping it. A sync run
+    that already started inside the current slot (e.g. the startup full sync) covers it. A
+    sync that is still running makes the next one return ``skipped`` (per-entity lock).
     """
     sync: SyncContext = ctx["sync"]
+    redis = ctx["redis"]
     async with sync.sessionmaker() as db:
         rt = await app_settings.load(db, sync.settings)
+        last_started: dict[str, datetime] = dict(
+            (
+                await db.execute(
+                    select(SyncRun.entity, func.max(SyncRun.started_at)).group_by(SyncRun.entity)
+                )
+            ).all()
+        )
     now = int(time.time())
     queued: list[str] = []
     for entity, interval in rt.sync_intervals.items():
         slot = now // interval
-        if now - slot * interval >= DISPATCH_EVERY:
-            continue  # not at the start of a slot
-        job = await ctx["redis"].enqueue_job(
-            f"sync_{entity}", _job_id=f"sync:{entity}:{interval}:{slot}"
+        claimed = await redis.set(
+            f"sync:slot:{entity}:{interval}:{slot}", "1", nx=True, ex=interval + 60
         )
-        if job is not None:
-            queued.append(entity)
+        if not claimed:
+            continue
+        last = last_started.get(entity)
+        if last is not None and last.timestamp() >= slot * interval:
+            continue  # already ran in this slot
+        await redis.enqueue_job(f"sync_{entity}", _job_id=f"sync:{entity}:{interval}:{slot}")
+        queued.append(entity)
     return queued
 
 
@@ -207,6 +223,7 @@ class WorkerSettings:
     ]
     cron_jobs: ClassVar[list[CronJob]] = _cron_jobs()
     health_check_interval = 30
+    max_jobs = 20  # 6 syncs + reconcile/stock refresh + crons must not starve each other
     job_timeout = 900
     on_startup = startup
     on_shutdown = shutdown

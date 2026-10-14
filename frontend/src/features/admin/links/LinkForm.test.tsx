@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
 import type { AdminLink } from '@/api/types';
-import { adminUser } from '@/test/fixtures';
+import { adminUser, linkStats } from '@/test/fixtures';
 import { server } from '@/test/server';
 import { renderApp } from '@/test/utils';
 
@@ -125,9 +125,7 @@ describe('link form validation', () => {
         );
       }),
       http.get('*/api/admin/links/5', () => HttpResponse.json(baseLink({ slug: 'shop-test' }))),
-      http.get('*/api/admin/links/5/stats', () =>
-        HttpResponse.json({ login_count: 3, max_logins: 10, active_sessions: 1, orders: null }),
-      ),
+      http.get('*/api/admin/links/5/stats', () => HttpResponse.json(linkStats())),
     );
     const { router } = renderApp('/admin/links/new');
     const user = userEvent.setup();
@@ -173,6 +171,10 @@ describe('link form validation', () => {
     );
     expect(screen.getByText(/Slug легко угадать/)).toBeInTheDocument();
     expect(await screen.findByText('3 / 10')).toBeInTheDocument();
+    // extended statistics panel
+    expect(await screen.findByText('Статистика ссылки')).toBeInTheDocument();
+    expect(screen.getByText('Shop Seven')).toBeInTheDocument();
+    expect(screen.getAllByText('5 000').length).toBeGreaterThan(0);
   });
 
   it('maps server 422 / 409 errors onto fields', async () => {

@@ -102,11 +102,30 @@ export interface AdminLink {
   warnings?: string[];
 }
 
+export interface OrdersSum {
+  orders: number;
+  sum: number;
+}
+
+export interface LinkStatsDay {
+  date: string;
+  logins: number;
+  orders: number;
+  sum: number;
+}
+
 export interface LinkStats {
   login_count: number;
   max_logins: number | null;
   active_sessions: number;
-  orders: number | null;
+  unique_clients: number;
+  orders: {
+    all_time: OrdersSum;
+    period: OrdersSum & { days: number; logins: number };
+    by_state: Record<string, OrdersSum>;
+  };
+  daily: LinkStatsDay[];
+  top_clients: (OrdersSum & { client_id: number; name: string | null })[];
 }
 
 export interface LinkClient {
@@ -295,3 +314,71 @@ export type ImportMatched = S['ImportMatched'];
 export type ImportAmbiguous = S['ImportAmbiguous'];
 
 export type ImportUnmatched = S['ImportUnmatched'];
+
+// ---- audit / reports / settings ----
+export type AuditEntry = S['AuditOut'];
+export type AuditList = S['AuditPage'];
+export type AuditFacets = S['AuditFacets'];
+export type SalesReport = S['SalesReport'];
+export type ReportGroupBy = SalesReport['group_by'];
+
+export const SYNC_ENTITIES = [
+  'references',
+  'products',
+  'prices',
+  'stock',
+  'clients',
+  'balances',
+] as const;
+export type SyncEntity = (typeof SYNC_ENTITIES)[number];
+
+export const NOTIFY_EVENTS = [
+  'new_order',
+  'order_failed',
+  'outcome_unknown',
+  'reconcile_exhausted',
+  'sync_error',
+] as const;
+export type NotifyEvent = (typeof NOTIFY_EVENTS)[number];
+
+export interface IntervalSetting {
+  default: number;
+  override: number | null;
+  effective: number;
+  min: number;
+  max: number;
+}
+
+export interface AppSettings {
+  sync_intervals: Record<SyncEntity, IntervalSetting>;
+  phone_max_clients: { default: number; override: number | null; effective: number };
+  telegram: {
+    enabled: boolean;
+    token_configured: boolean;
+    token_error: boolean;
+    chat_ids: string[];
+    events: NotifyEvent[];
+    active: boolean;
+    health?: {
+      last_ok_at?: string | null;
+      last_error?: string | null;
+      last_error_at?: string | null;
+      retry_until?: string | null;
+    };
+  };
+  sync_enabled: boolean;
+  sd: { host: string | null; credentials_configured: boolean; filial_id: number | null };
+}
+
+export interface AppSettingsUpdate {
+  sync_intervals?: Partial<Record<SyncEntity, number | null>>;
+  phone_max_clients?: number;
+  reset_phone_max_clients?: boolean;
+  telegram?: {
+    enabled?: boolean;
+    /** write-only; "" clears the stored token */
+    bot_token?: string;
+    chat_ids?: string[];
+    events?: NotifyEvent[];
+  };
+}

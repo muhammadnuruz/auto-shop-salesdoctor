@@ -3,7 +3,7 @@ DB-driven sync dispatcher, audit log browser."""
 
 import io
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -270,18 +270,21 @@ async def test_notifier_starts_at_now_and_delivers_new_orders_once(
     assert code and code in sent["text"] and "1 000" in sent["text"]
 
 
-async def test_notifier_retries_transient_failures(world: World, mock_sd: respx.MockRouter) -> None:
-    s = world.sync.settings
+async def test_notifier_retries_transient_failures(
+    world: World, mock_sd: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = clock.utcnow()
     async with httpx.AsyncClient() as http:
-        await notifier.tick(world.session, http, s)
+        await _tick_at(world, http, monkeypatch, now)
         await _configure_telegram(world)
         await place(world, [("pb", 0, 1)])
         route = mock_sd.post(TG).mock(
             side_effect=[httpx.ConnectError("boom"), httpx.Response(200, json={"ok": True})]
         )
-        assert await notifier.tick(world.session, http, s) == 0
-        assert await notifier.tick(world.session, http, s) == 1
-        assert await notifier.tick(world.session, http, s) == 0
+        assert await _tick_at(world, http, monkeypatch, now) == 0
+        assert await _tick_at(world, http, monkeypatch, now + timedelta(seconds=10)) == 0  # backoff
+        assert await _tick_at(world, http, monkeypatch, now + timedelta(seconds=31)) == 1
+        assert await _tick_at(world, http, monkeypatch, now + timedelta(seconds=62)) == 0
     assert route.call_count == 2
 
 
@@ -305,7 +308,7 @@ async def test_notifier_sync_error_transitions_only(
 ) -> None:
     route = mock_sd.post(TG).mock(return_value=httpx.Response(200, json={"ok": True}))
     s = world.sync.settings
-    base = clock.utcnow()
+    base = clock.utcnow() - timedelta(minutes=10)
     async with httpx.AsyncClient() as http:
         await notifier.tick(world.session, http, s)
         await _configure_telegram(world)
@@ -313,19 +316,162 @@ async def test_notifier_sync_error_transitions_only(
         def run(i: int, status: str) -> SyncRun:
             at = base + timedelta(seconds=10 * (i + 1))
             return SyncRun(
-                entity="stock", started_at=at, finished_at=at, status=status, error="E" * i
+                entity="stock", started_at=at, finished_at=at, status=status, error=f"err-{i}"
             )
 
         world.session.add_all(
             [run(0, "error"), run(1, "error"), run(2, "error"), run(3, "ok"), run(4, "ok")]
         )
-        world.session.add(SyncRun(entity="prices", started_at=base, status="running"))
+        running = SyncRun(entity="prices", started_at=base, status="running")
+        world.session.add(running)
         await world.session.commit()
         assert await notifier.tick(world.session, http, s) == 2  # failure + recovery
         assert await notifier.tick(world.session, http, s) == 0
+
+        # the long-running run finishes later with an earlier-looking id: still reported
+        running.status, running.error = "error", "prices broke"
+        running.finished_at = base + timedelta(seconds=100)
+        await world.session.commit()
+        assert await notifier.tick(world.session, http, s) == 1
+
+        # a run that finished just now is held back by the commit lag, then delivered
+        fresh = SyncRun(
+            entity="clients",
+            started_at=clock.utcnow(),
+            finished_at=clock.utcnow(),
+            status="error",
+            error="clients broke",
+        )
+        world.session.add(fresh)
+        await world.session.commit()
+        assert await notifier.tick(world.session, http, s) == 0
     texts = [json.loads(c.request.content)["text"] for c in route.calls]
-    assert "Ошибка синхронизации «stock»" in texts[0] and "EEE" not in texts[0]  # first failure
+    assert "«stock»" in texts[0] and "err-0" in texts[0] and "err-1" not in texts[0]
     assert "восстановлена" in texts[1]
+    assert "prices broke" in texts[2]
+
+
+async def _tick_at(
+    world: World, http: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, at: datetime
+) -> int:
+    monkeypatch.setattr(notifier, "clock", SimpleNamespace(utcnow=lambda: at))
+    return await notifier.tick(world.session, http, world.sync.settings)
+
+
+async def test_notifier_per_chat_progress_and_retry_after(
+    world: World, mock_sd: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = clock.utcnow()
+    calls: list[str] = []
+    limited = {"left": 1}  # the second chat is rate limited once
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chat = json.loads(request.content)["chat_id"]
+        calls.append(chat)
+        if chat == "@limited" and limited["left"] > 0:
+            limited["left"] -= 1
+            return httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 120}})
+        return httpx.Response(200, json={"ok": True})
+
+    mock_sd.post(TG).mock(side_effect=handler)
+    async with httpx.AsyncClient() as http:
+        await _tick_at(world, http, monkeypatch, now)
+        await world.admin.put(
+            "/api/admin/settings",
+            {"telegram": {"enabled": True, "bot_token": TOKEN, "chat_ids": ["111", "@limited"]}},
+        )
+        await place(world, [("pb", 0, 1)])
+        assert await _tick_at(world, http, monkeypatch, now) == 0
+        assert calls == ["111", "@limited"]
+        # inside retry_after: nothing is sent
+        assert await _tick_at(world, http, monkeypatch, now + timedelta(seconds=60)) == 0
+        assert calls == ["111", "@limited"]
+        # afterwards only the chat that missed it gets it: no duplicate for 111
+        assert await _tick_at(world, http, monkeypatch, now + timedelta(seconds=130)) == 1
+        assert calls == ["111", "@limited", "@limited"]
+        h = (await world.admin.get("/api/admin/settings")).json()["telegram"]["health"]
+        assert h["last_ok_at"] and "429" in h["last_error"]
+
+
+async def test_notifier_bad_token_blocks_and_bad_chat_is_skipped(
+    world: World, mock_sd: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = clock.utcnow()
+    async with httpx.AsyncClient() as http:
+        await _tick_at(world, http, monkeypatch, now)
+        await _configure_telegram(world)
+        await place(world, [("pb", 0, 1)])
+        route = mock_sd.post(TG).mock(return_value=httpx.Response(401, json={"ok": False}))
+        assert await _tick_at(world, http, monkeypatch, now) == 0
+        assert await _tick_at(world, http, monkeypatch, now + timedelta(minutes=1)) == 0
+        assert route.call_count == 2  # retried, not dropped
+        h = (await world.admin.get("/api/admin/settings")).json()["telegram"]["health"]
+        assert "token rejected" in h["last_error"] and TOKEN not in str(h)
+
+        route.mock(return_value=httpx.Response(200, json={"ok": True}))
+        assert await _tick_at(world, http, monkeypatch, now + timedelta(minutes=2)) == 1
+
+        # a chat that refuses (400) is skipped for that message instead of blocking forever
+        await place(world, [("pb", 0, 1)])
+        route.mock(return_value=httpx.Response(400, json={"ok": False}))
+        assert await _tick_at(world, http, monkeypatch, now + timedelta(minutes=3)) == 1
+        assert await _tick_at(world, http, monkeypatch, now + timedelta(minutes=4)) == 0
+
+
+async def test_notifier_drops_stale_and_limits_per_tick(
+    world: World, mock_sd: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = mock_sd.post(TG).mock(return_value=httpx.Response(200, json={"ok": True}))
+    now = clock.utcnow()
+    async with httpx.AsyncClient() as http:
+        await _tick_at(world, http, monkeypatch, now)
+        await _configure_telegram(world)
+        await place(world, [("pb", 0, 1)])
+        # seen 7 hours later (e.g. after an outage): too old, dropped silently
+        assert await _tick_at(world, http, monkeypatch, now + timedelta(hours=7)) == 0
+        assert route.call_count == 0
+
+        base = clock.utcnow() - timedelta(minutes=30)
+        for i in range(notifier.MAX_PER_TICK + 3):
+            at = base + timedelta(seconds=i)
+            status = "error" if i % 2 == 0 else "ok"
+            world.session.add(SyncRun(entity="stock", started_at=at, finished_at=at, status=status))
+        await world.session.commit()
+        assert await _tick_at(world, http, monkeypatch, now) == notifier.MAX_PER_TICK
+        assert await _tick_at(world, http, monkeypatch, now) == 3
+
+
+async def test_notifier_picks_up_events_committed_out_of_order(
+    world: World, mock_sd: respx.MockRouter
+) -> None:
+    from app.models import ShopOrderEvent
+
+    route = mock_sd.post(TG).mock(return_value=httpx.Response(200, json={"ok": True}))
+    s = world.sync.settings
+    async with httpx.AsyncClient() as http:
+        await notifier.tick(world.session, http, s)
+        await _configure_telegram(world)
+        await place(world, [("pb", 0, 1)])
+        order_id = await world.session.scalar(select(ShopOrder.id).order_by(ShopOrder.id.desc()))
+        top = await world.session.scalar(
+            select(ShopOrderEvent.id).order_by(ShopOrderEvent.id.desc())
+        )
+        assert await notifier.tick(world.session, http, s) == 1
+        # an older event (lower id than the cursor) only becomes relevant now — the same
+        # situation as a transaction that committed after a newer one was processed
+        older = (
+            await world.session.scalars(
+                select(ShopOrderEvent).where(
+                    ShopOrderEvent.order_id == order_id, ShopOrderEvent.event == "submitted"
+                )
+            )
+        ).one()
+        assert older.id < (top or 0)
+        older.event = "outcome_unknown"
+        await world.session.commit()
+        assert await notifier.tick(world.session, http, s) == 1
+        assert await notifier.tick(world.session, http, s) == 0
+    assert route.call_count == 2
 
 
 async def test_notifier_maps_order_problems() -> None:
@@ -354,39 +500,79 @@ async def test_notifier_maps_order_problems() -> None:
 
 
 class FakeArq:
-    def __init__(self) -> None:
-        self.ids: set[str] = set()
+    """ArqRedis stand-in: real (fake)redis for the slot claim, recorded enqueues."""
+
+    def __init__(self, redis: Any) -> None:
+        self.redis = redis
         self.calls: list[str] = []
 
-    async def enqueue_job(self, name: str, *, _job_id: str) -> object | None:
-        if _job_id in self.ids:
-            return None
-        self.ids.add(_job_id)
+    async def set(self, *a: Any, **kw: Any) -> Any:
+        return await self.redis.set(*a, **kw)
+
+    async def enqueue_job(self, name: str, *, _job_id: str) -> object:
         self.calls.append(name)
         return object()
+
+
+def _at(monkeypatch: pytest.MonkeyPatch, t: float) -> None:
+    monkeypatch.setattr(worker, "time", SimpleNamespace(time=lambda: float(t)))
+
+
+T0 = 1_800_000_000  # divisible by 60, 300, 600, 1800 and 3600 -> every slot starts here
 
 
 async def test_dispatcher_uses_db_intervals_and_dedupes(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    arq = FakeArq()
+    arq, other_worker = FakeArq(world.redis), FakeArq(world.redis)
     ctx: dict[str, Any] = {"sync": world.sync, "redis": arq}
-    t = 1_800_000_000  # divisible by 60, 300, 600, 1800 and 3600 -> every slot starts here
-    monkeypatch.setattr(worker, "time", SimpleNamespace(time=lambda: float(t)))
-    queued = await worker.dispatch_syncs(ctx)
-    assert set(queued) == set(app_settings.SYNC_ENTITIES)
-    assert await worker.dispatch_syncs(ctx) == []  # same slot: deduplicated by job id
+    _at(monkeypatch, T0)
+    assert set(await worker.dispatch_syncs(ctx)) == set(app_settings.SYNC_ENTITIES)
+    assert await worker.dispatch_syncs(ctx) == []  # same slot: claimed
+    assert await worker.dispatch_syncs({**ctx, "redis": other_worker}) == []  # other worker
 
-    monkeypatch.setattr(worker, "time", SimpleNamespace(time=lambda: float(t + 60)))
+    _at(monkeypatch, T0 + 60)
     assert await worker.dispatch_syncs(ctx) == ["stock"]  # default stock interval = 60 s
 
+    # the stock sync queued at T0+60 actually ran
+    world.session.add(
+        SyncRun(entity="stock", started_at=datetime.fromtimestamp(T0 + 61, UTC), status="ok")
+    )
+    await world.session.commit()
     r = await world.admin.put("/api/admin/settings", {"sync_intervals": {"stock": 300}})
     assert r.status_code == 200, r.text
-    assert r.json()["sync_intervals"]["stock"]["effective"] == 300
-    monkeypatch.setattr(worker, "time", SimpleNamespace(time=lambda: float(t + 120)))
-    assert await worker.dispatch_syncs(ctx) == []
-    monkeypatch.setattr(worker, "time", SimpleNamespace(time=lambda: float(t + 300 + 5)))
+    _at(monkeypatch, T0 + 120)
+    assert await worker.dispatch_syncs(ctx) == []  # new 300 s slot is covered by that run
+    _at(monkeypatch, T0 + 300 + 5)
     assert await worker.dispatch_syncs(ctx) == ["stock", "balances"]
+
+
+async def test_dispatcher_late_tick_still_runs_the_slot(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    arq = FakeArq(world.redis)
+    ctx: dict[str, Any] = {"sync": world.sync, "redis": arq}
+    _at(monkeypatch, T0 + 1800 - 1)  # previous slots
+    await worker.dispatch_syncs(ctx)
+    _at(monkeypatch, T0 + 1800 + 95)  # the tick at the slot start was missed (busy worker)
+    assert "clients" in await worker.dispatch_syncs(ctx)
+
+
+async def test_dispatcher_skips_slot_covered_by_a_run(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.session.add(
+        SyncRun(
+            entity="clients",
+            started_at=datetime.fromtimestamp(T0 + 10, UTC),
+            status="ok",
+        )
+    )
+    await world.session.commit()
+    arq = FakeArq(world.redis)
+    _at(monkeypatch, T0 + 20)  # e.g. the startup full sync already ran in this slot
+    queued = await worker.dispatch_syncs({"sync": world.sync, "redis": arq})
+    assert "clients" not in queued and "products" in queued
 
 
 def test_worker_registers_dispatch_and_notify() -> None:
@@ -432,3 +618,56 @@ async def test_audit_list_filters_and_facets(world: World, app_factory: ApiFacto
     op = await login_as(app_factory, world, "op3", "operator")
     assert (await op.get("/api/admin/audit")).status_code == 403
     assert (await op.get("/api/admin/audit/facets")).status_code == 403
+
+
+# ------------------------------------------------------------------------ review regressions
+
+
+async def test_link_logins_survive_session_purge(world: World) -> None:
+    from sqlalchemy import delete
+
+    from app.models import ShopSession
+
+    before = (await world.admin.get(f"/api/admin/links/{world.link.id}/stats")).json()
+    await world.session.execute(delete(ShopSession).where(ShopSession.link_id == world.link.id))
+    await world.session.commit()
+    after = (await world.admin.get(f"/api/admin/links/{world.link.id}/stats")).json()
+    assert after["orders"]["period"]["logins"] == before["orders"]["period"]["logins"] >= 1
+    assert after["unique_clients"] == before["unique_clients"] == 1
+    assert after["active_sessions"] == 0
+
+
+async def test_report_export_strips_control_characters(world: World) -> None:
+    from openpyxl import load_workbook
+
+    world.client.name = "Shop\x07 One\x1f\x0b"
+    await world.session.commit()
+    await place(world, [("pb", 0, 1)])
+    r = await world.admin.get("/api/admin/reports/sales.xlsx", params={"group_by": "client"})
+    assert r.status_code == 200
+    ws = load_workbook(io.BytesIO(r.content)).active
+    assert [c.value for c in next(ws.iter_rows(min_row=3, max_row=3))][1] == "Shop One"
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{"date_to": "9999-12-31"}, {"date_from": "1900-01-01", "date_to": "1900-01-02"}],
+)
+async def test_report_rejects_absurd_dates(world: World, params: dict[str, str]) -> None:
+    assert (await world.admin.get("/api/admin/reports/sales", params=params)).status_code == 422
+
+
+async def test_settings_audit_before_includes_telegram_without_secret(world: World) -> None:
+    await _configure_telegram(world)
+    await world.admin.put("/api/admin/settings", {"telegram": {"enabled": False}})
+    last = (
+        await world.session.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "settings.update")
+            .order_by(AuditLog.id.desc())
+        )
+    ).first()
+    assert last is not None and last.before is not None
+    assert last.before["telegram"]["enabled"] is True
+    assert last.before["telegram"]["chat_ids"] == ["42"]
+    assert TOKEN not in str(last.before) and TOKEN not in str(last.after)

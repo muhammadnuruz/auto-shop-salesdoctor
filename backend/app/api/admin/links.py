@@ -17,7 +17,7 @@ from app.api.admin.dashboard import PLACED
 from app.api.deps import AdminContext, DbDep, MetaDep, require
 from app.core import clock
 from app.domain.link_settings import LinkSettings, validate_link_settings
-from app.models import AccessLink, LinkClient, SdClient, ShopOrder, ShopSession
+from app.models import AccessLink, AuditLog, LinkClient, SdClient, ShopOrder, ShopSession
 from app.services import audit
 from app.services.orders import num
 from app.sync.common import SD_TZ
@@ -467,20 +467,23 @@ async def link_stats(
             ShopSession.expires_at > now,
         )
     )
+    # logins come from the audit trail (kept AUDIT_RETENTION_DAYS); shop_session rows are
+    # purged a week after logout/expiry and would undercount
+    login_rows = (
+        (AuditLog.entity_type == "access_link")
+        & (AuditLog.entity_id == str(link_id))
+        & (AuditLog.action == "shop.login")
+    )
     unique_clients = await db.scalar(
-        select(func.count(func.distinct(ShopSession.client_id))).where(
-            ShopSession.link_id == link_id
-        )
+        select(func.count(func.distinct(AuditLog.after["client_id"].astext))).where(login_rows)
     )
     tz: ColumnElement[str] = literal_column(f"'{SD_TZ.key}'")
     fmt: ColumnElement[str] = literal_column("'YYYY-MM-DD'")
-    s_day = func.to_char(func.timezone(tz, ShopSession.created_at), fmt)
+    a_day = func.to_char(func.timezone(tz, AuditLog.at), fmt)
     logins: dict[str, int] = dict(
         (
             await db.execute(
-                select(s_day, func.count())
-                .where(ShopSession.link_id == link_id, ShopSession.created_at >= since)
-                .group_by(s_day)
+                select(a_day, func.count()).where(login_rows, AuditLog.at >= since).group_by(a_day)
             )
         ).all()
     )

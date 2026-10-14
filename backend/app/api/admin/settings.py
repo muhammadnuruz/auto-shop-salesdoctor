@@ -37,7 +37,9 @@ def _sd_info(settings: Settings) -> dict[str, Any]:
 
 async def _view(db: DbDep, settings: Settings) -> dict[str, Any]:
     rt = await app_settings.load(db, settings)
-    return {**app_settings.public_view(rt, settings), "sd": _sd_info(settings)}
+    view = app_settings.public_view(rt, settings)
+    view["telegram"]["health"] = await notifier.health(db)
+    return {**view, "sd": _sd_info(settings)}
 
 
 @router.get("")
@@ -58,7 +60,7 @@ async def update_settings(
         action="settings.update",
         entity_type="settings",
         entity_id="app",
-        before={k: before[k] for k in ("sync_intervals", "phone_max_clients")},
+        before={k: before[k] for k in ("sync_intervals", "phone_max_clients", "telegram")},
         after=app_settings.audit_view(body),
         meta=meta,
     )

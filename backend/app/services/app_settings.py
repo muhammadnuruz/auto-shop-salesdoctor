@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +45,7 @@ KEY_SYNC_INTERVALS = "sync.intervals"
 KEY_PHONE_MAX_CLIENTS = "phone.max_clients"
 KEY_TELEGRAM = "telegram"
 KEY_TELEGRAM_CURSOR = "telegram.cursor"  # internal (notifier position); never exposed
+SETTINGS_LOCK_KEY = 0x5E771265  # pg advisory lock id for settings updates
 
 CHAT_ID_RE = re.compile(r"^(-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$")
 BOT_TOKEN_RE = re.compile(r"^\d{5,15}:[A-Za-z0-9_-]{30,64}$")
@@ -216,7 +217,12 @@ async def _delete(db: AsyncSession, key: str) -> None:
 async def apply_update(
     db: AsyncSession, settings: Settings, body: SettingsUpdate, admin_id: int | None
 ) -> None:
-    """Persist a partial update (caller commits and audits)."""
+    """Persist a partial update (caller commits and audits).
+
+    Serialised with a transaction-level advisory lock: the JSON values are read-merged-written,
+    so two admins saving different fields at once must not lose one of the changes.
+    """
+    await db.execute(select(func.pg_advisory_xact_lock(SETTINGS_LOCK_KEY)))
     raw = await _raw(db)
     if body.sync_intervals is not None:
         current = raw.get(KEY_SYNC_INTERVALS)

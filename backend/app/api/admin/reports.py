@@ -16,6 +16,7 @@ from sqlalchemy import ColumnElement, String, cast, func, literal_column, select
 from app.api.admin.dashboard import PLACED
 from app.api.deps import AdminContext, DbDep, MetaDep, require
 from app.api.schemas import Number
+from app.core.xlsx import cell
 from app.models import (
     AccessLink,
     SdAgent,
@@ -34,6 +35,8 @@ ReadDep = Annotated[AdminContext, Depends(require("reports.read"))]
 
 GroupBy = Literal["client", "product", "category", "link", "agent", "day"]
 MAX_DAYS = 366
+MIN_DATE = date(2000, 1, 1)
+MAX_DATE = date(2100, 12, 31)
 MAX_ROWS = 5000
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -65,8 +68,8 @@ class Params:
     def __init__(
         self,
         group_by: GroupBy = "client",
-        date_from: date | None = None,
-        date_to: date | None = None,
+        date_from: Annotated[date | None, Query(ge=MIN_DATE, le=MAX_DATE)] = None,
+        date_to: Annotated[date | None, Query(ge=MIN_DATE, le=MAX_DATE)] = None,
         link_id: Annotated[int | None, Query(ge=1)] = None,
         client_id: Annotated[int | None, Query(ge=1)] = None,
         agent: Annotated[str | None, Query(max_length=64)] = None,
@@ -197,13 +200,6 @@ async def sales_report(ctx: ReadDep, db: DbDep, p: Annotated[Params, Depends()])
     return await build_report(db, p)
 
 
-def _safe(value: Any) -> Any:
-    # neutralise spreadsheet formula injection from SD/user-controlled text
-    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
-        return "'" + value
-    return value
-
-
 @router.get("/sales.xlsx")
 async def sales_report_xlsx(
     ctx: ReadDep, db: DbDep, meta: MetaDep, p: Annotated[Params, Depends()]
@@ -216,7 +212,7 @@ async def sales_report_xlsx(
     ws.append([f"Period: {p.date_from.isoformat()} — {p.date_to.isoformat()}"])
     ws.append(["Key", "Name", "Orders", "Qty", "Sum"])
     for r in report["rows"]:
-        ws.append([_safe(r["key"]), _safe(r["name"]), r["orders"], r["qty"], r["sum"]])
+        ws.append([cell(r["key"]), cell(r["name"]), r["orders"], r["qty"], r["sum"]])
     t = report["totals"]
     ws.append(["", "TOTAL", t["orders"], t["qty"], t["sum"]])
     buf = io.BytesIO()
