@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.api.admin import (
+    audit,
     auth,
     clients,
     dashboard,
@@ -9,6 +10,8 @@ from app.api.admin import (
     orders,
     products,
     refs,
+    reports,
+    settings,
     sync,
     users,
 )
@@ -25,3 +28,6 @@ router.include_router(refs.router)
 router.include_router(dashboard.router)
 router.include_router(sync.router)
 router.include_router(health.router)
+router.include_router(audit.router)
+router.include_router(reports.router)
+router.include_router(settings.router)

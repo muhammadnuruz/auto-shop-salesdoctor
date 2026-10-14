@@ -1,6 +1,8 @@
 """arq worker: SD sync cron jobs plus a heartbeat."""
 
 import asyncio
+import contextlib
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 
@@ -12,7 +14,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import create_engine, create_sessionmaker
 from app.integrations.salesdoctor import SalesDoctorClient, TokenStore
-from app.services import order_jobs
+from app.services import app_settings, notifier, order_jobs
 from app.services.jobs import ArqJobQueue, JobQueue
 from app.services.retention import purge_auth_data
 from app.sync.context import SyncContext
@@ -83,25 +85,47 @@ async def sweep_unknown_orders(ctx: dict[str, Any]) -> None:
     await order_jobs.sweep_unknown(ctx["sync"], _jobs(ctx))
 
 
-def _schedule(interval: int) -> dict[str, Any]:
-    """Map an interval in seconds to arq cron fields (intervals should divide the hour)."""
-    if interval < 60:
-        return {"second": set(range(0, 60, interval)), "microsecond": 0}
-    minutes = max(1, min(60, interval // 60))
-    if minutes >= 60:
-        return {"minute": {0}, "second": 0, "microsecond": 0}
-    return {"minute": set(range(0, 60, minutes)), "second": 0, "microsecond": 0}
+SYNC_JOBS: dict[str, Any] = {e: _sync_job(e) for e in app_settings.SYNC_ENTITIES}
+DISPATCH_EVERY = 10  # seconds; granularity of the DB-configurable sync intervals
 
 
-SYNC_INTERVALS = {
-    "stock": settings.SYNC_STOCK_INTERVAL,
-    "balances": settings.SYNC_BALANCES_INTERVAL,
-    "products": settings.SYNC_PRODUCTS_INTERVAL,
-    "prices": settings.SYNC_PRICES_INTERVAL,
-    "clients": settings.SYNC_CLIENTS_INTERVAL,
-    "references": settings.SYNC_REFERENCES_INTERVAL,
-}
-SYNC_JOBS: dict[str, Any] = {e: _sync_job(e) for e in SYNC_INTERVALS}
+async def dispatch_syncs(ctx: dict[str, Any]) -> list[str]:
+    """Enqueue each entity's sync when its interval slot starts.
+
+    Intervals come from ``app_setting`` (admin panel) with env defaults. The arq job id embeds
+    the slot, so several workers (or a slow tick) never enqueue the same slot twice; a sync
+    that is still running makes the next one return ``skipped`` (per-entity Redis lock).
+    """
+    sync: SyncContext = ctx["sync"]
+    async with sync.sessionmaker() as db:
+        rt = await app_settings.load(db, sync.settings)
+    now = int(time.time())
+    queued: list[str] = []
+    for entity, interval in rt.sync_intervals.items():
+        slot = now // interval
+        if now - slot * interval >= DISPATCH_EVERY:
+            continue  # not at the start of a slot
+        job = await ctx["redis"].enqueue_job(
+            f"sync_{entity}", _job_id=f"sync:{entity}:{interval}:{slot}"
+        )
+        if job is not None:
+            queued.append(entity)
+    return queued
+
+
+async def notify_tick(ctx: dict[str, Any]) -> None:
+    sync: SyncContext = ctx["sync"]
+    lock = ctx["redis"].lock("notify:lock", timeout=120)
+    if not await lock.acquire(blocking=False):
+        return
+    try:
+        async with sync.sessionmaker() as db:
+            await notifier.tick(db, ctx["http"], sync.settings)
+    except Exception as exc:  # never kill the worker; next tick retries
+        log.warning("notify_tick_failed", error=type(exc).__name__)
+    finally:
+        with contextlib.suppress(Exception):
+            await lock.release()
 
 
 def _cron_jobs() -> list[CronJob]:
@@ -116,7 +140,8 @@ def _cron_jobs() -> list[CronJob]:
             cron(sync_order_statuses, minute=set(range(0, 60, 5)), second=15, microsecond=0)
         )
         jobs.append(cron(sync_old_open_orders, minute={20}, second=45, microsecond=0))
-        jobs += [cron(SYNC_JOBS[e], **_schedule(i)) for e, i in SYNC_INTERVALS.items()]
+        jobs.append(cron(dispatch_syncs, second=set(range(0, 60, DISPATCH_EVERY)), microsecond=0))
+    jobs.append(cron(notify_tick, second={5, 35}, microsecond=0))
     return jobs
 
 
@@ -176,6 +201,8 @@ class WorkerSettings:
         sync_order_statuses,
         sync_old_open_orders,
         sweep_unknown_orders,
+        dispatch_syncs,
+        notify_tick,
         *SYNC_JOBS.values(),
     ]
     cron_jobs: ClassVar[list[CronJob]] = _cron_jobs()

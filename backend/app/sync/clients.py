@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.phone import evaluate_phone, phone_keys
 from app.models import ClientPhone, PhoneFlag, SdClient
+from app.services.app_settings import phone_max_clients
 from app.sync.common import (
     SyncOutcome,
     bulk_upsert,
@@ -191,6 +192,7 @@ async def sync_clients(ctx: SyncContext) -> SyncOutcome:
         )
         out.detail["phones"] = len(wanted)
         out.detail["clients_without_valid_phone"] = without_phone
-        out.detail.update(await recompute_phone_flags(session, ctx.settings.PHONE_MAX_CLIENTS))
+        max_clients = await phone_max_clients(session, ctx.settings)
+        out.detail.update(await recompute_phone_flags(session, max_clients))
         await session.commit()
     return out
