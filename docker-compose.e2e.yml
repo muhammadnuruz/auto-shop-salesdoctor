@@ -6,6 +6,9 @@
 #     run --rm api python -m e2e.seed --admin-password "$E2E_ADMIN_PASSWORD" [--load]
 #
 # (or simply `make e2e-up` / `make e2e-seed` / `make e2e` — see Makefile)
+# own project name: running this overlay without -p must never touch the production stack
+name: autoshop-e2e
+
 x-e2e-env: &e2e-env
   ENV: local
   DATABASE_URL: postgresql+asyncpg://autoshop:e2e-only-password@db:5432/autoshop_e2e

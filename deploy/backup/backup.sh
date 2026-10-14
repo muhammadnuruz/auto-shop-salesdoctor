@@ -14,6 +14,8 @@ echo "backup: wrote $out ($(du -h "$out" | cut -f1))"
 /bin/sh /scripts/restore-test.sh "$out"
 touch "$out.verified"
 
+# leftovers of interrupted dumps
+find /backups -maxdepth 1 -name ".*.dump.partial" -mmin +120 -exec rm -f {} \;
 find /backups -maxdepth 1 -name "${PGDATABASE}-*.dump" -mtime "+${BACKUP_RETENTION_DAYS:-14}" |
   while read -r old; do
     rm -f "$old" "$old.verified"

@@ -18,6 +18,7 @@ Principles
 
 import hashlib
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -389,6 +390,23 @@ class FlowResult:
     errors: list[dict[str, Any]] = field(default_factory=list)
 
 
+REFRESH_BUCKET = 10  # seconds: sends of one warehouse within a bucket share one refresh
+
+
+async def enqueue_stock_refresh(svc: Services, warehouse_sd_id: str | None) -> None:
+    """Full-warehouse mirror refresh shortly after a send, deduplicated per time bucket (50
+    submits in a burst trigger a handful of getStock calls, not 50)."""
+    if not warehouse_sd_id:
+        return
+    bucket = int(time.time()) // REFRESH_BUCKET
+    await svc.jobs.enqueue(
+        REFRESH_WAREHOUSE_STOCK,
+        warehouse_sd_id,
+        defer_by=2,
+        job_id=f"stock-refresh:{warehouse_sd_id}:{bucket}",
+    )
+
+
 async def _enqueue_reconcile(svc: Services, order_id: int) -> None:
     await svc.jobs.enqueue(RECONCILE_ORDER, order_id, defer_by=RECONCILE_MIN_AGE.total_seconds())
 
@@ -566,6 +584,9 @@ async def _submit_locked(
 
     status = st.order_status if st is not None else 1
     payload = build_payload(order, view.lines, client, status)
+    # Nothing below rolls back (every outcome is recorded), so end the transaction before the
+    # SD call: no row locks (sd_stock of this order's products) are held while SD answers.
+    await db.commit()
     await lock.renew()
     try:
         result = await push_order(svc.sd, payload)
@@ -596,7 +617,7 @@ async def _submit_locked(
     await db.commit()
 
     if result.kind == "sent":
-        await svc.jobs.enqueue(REFRESH_WAREHOUSE_STOCK, order.warehouse_sd_id, defer_by=2)
+        await enqueue_stock_refresh(svc, order.warehouse_sd_id)
     elif result.kind == "unknown":
         await _enqueue_reconcile(svc, order.id)
     return FlowResult(result.kind, order, view, result.errors)
@@ -669,7 +690,7 @@ async def cancel_order(
             add_event(db, order, "sd_error", actor, {"message": result.message, "op": "cancel"})
         await db.commit()
     if result.kind == "sent":
-        await svc.jobs.enqueue(REFRESH_WAREHOUSE_STOCK, order.warehouse_sd_id, defer_by=2)
+        await enqueue_stock_refresh(svc, order.warehouse_sd_id)
     elif result.kind == "unknown":
         await _enqueue_reconcile(svc, order.id)
     return FlowResult(result.kind, order, view, result.errors)
@@ -711,7 +732,7 @@ async def push_after_admin_edit(
         add_event(db, order, "admin_edit", actor, changes)
         record_audit(db, actor, "order.admin_edit", order, meta, before=before, after=changes)
         await db.commit()
-        await svc.jobs.enqueue(REFRESH_WAREHOUSE_STOCK, order.warehouse_sd_id, defer_by=2)
+        await enqueue_stock_refresh(svc, order.warehouse_sd_id)
         return AdminEditOutcome("sent", view)
     if result.kind == "unknown":
         # keep the edit locally; reconcile compares SD with it and re-sends the CURRENT content
@@ -906,7 +927,7 @@ async def discard_order(
         if result.kind == "unknown":
             await _enqueue_reconcile(svc, order.id)
         elif result.kind == "sent" and order.warehouse_sd_id:
-            await svc.jobs.enqueue(REFRESH_WAREHOUSE_STOCK, order.warehouse_sd_id, defer_by=2)
+            await enqueue_stock_refresh(svc, order.warehouse_sd_id)
         return result, order
 
 
@@ -1084,7 +1105,7 @@ async def reconcile_order(
                 )
             await db.commit()
             if order.warehouse_sd_id:
-                await svc.jobs.enqueue(REFRESH_WAREHOUSE_STOCK, order.warehouse_sd_id, defer_by=2)
+                await enqueue_stock_refresh(svc, order.warehouse_sd_id)
             return "sent"
         if res.kind == "rejected":
             result = res.result or PushResult("rejected")

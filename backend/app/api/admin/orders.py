@@ -503,8 +503,11 @@ async def _edit_locked(
         await db.rollback()
         raise problem(422, "validation_failed", errors=problems)
     if fresh is not None:
+        # only this order's products: this transaction stays open across the SD call (it is
+        # rolled back if SD refuses), so touching every sd_stock row would block all submits
+        mine = [v.product.sd_id for v in view.lines]
         await apply_to_mirror(
-            db, order.warehouse_sd_id, fresh, force_zero=[v.product.sd_id for v in view.lines]
+            db, order.warehouse_sd_id, {r: fresh[r] for r in mine if r in fresh}, force_zero=mine
         )
     outcome = await push_after_admin_edit(
         db, flow, order, view, client, st, actor, changes, meta, before, lock

@@ -56,3 +56,29 @@ def test_sentry_scrubbing_drops_secrets_and_pii() -> None:
     assert req["headers"] == {"User-Agent": "UA"}
     assert "user" not in out
     assert out["extra"]["password"] == "***" and "abcdef" not in out["extra"]["note"]
+
+
+def test_sentry_scrubbing_masks_phones_ips_and_query() -> None:
+    event: dict[str, Any] = {
+        "request": {
+            "url": "https://shop.example/api/shop/auth/login?slug=abc&phone=998901234567",
+            "headers": {"X-Real-IP": "1.2.3.4", "Accept": "*/*"},
+        },
+        "exception": {
+            "values": [
+                {"value": "IntegrityError ... [parameters: ('901234567', '+998 90 123-45-67')]"}
+            ]
+        },
+        "breadcrumbs": {"values": [{"message": "login for 998901234567 failed"}]},
+    }
+    out = scrub_event(event)
+    assert out["request"]["url"] == "https://shop.example/api/shop/auth/login"
+    assert out["request"]["headers"] == {"Accept": "*/*"}
+    text = str(out)
+    assert "901234567" not in text and "123-45-67" not in text and "[phone]" in text
+
+
+def test_healthcheck_defaults_to_liveness() -> None:
+    import inspect
+
+    assert 'http://localhost:8000/health"' in inspect.getsource(healthcheck.main)

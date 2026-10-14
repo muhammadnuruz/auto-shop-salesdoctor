@@ -177,6 +177,7 @@ async def startup(ctx: dict[str, Any]) -> None:
         settings.DATABASE_URL,
         pool_size=settings.DB_POOL_SIZE,
         max_overflow=settings.DB_MAX_OVERFLOW,
+        hide_parameters=settings.ENV not in ("local", "test"),
         server_settings={
             "lock_timeout": "5000",
             "idle_in_transaction_session_timeout": "60000",

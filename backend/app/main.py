@@ -36,6 +36,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.DATABASE_URL,
             pool_size=settings.DB_POOL_SIZE,
             max_overflow=settings.DB_MAX_OVERFLOW,
+            hide_parameters=settings.ENV not in ("local", "test"),
         )
         redis: Redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
         http = httpx.AsyncClient(

@@ -55,6 +55,7 @@ test('shop: unknown phone is refused', async ({ page }) => {
 });
 
 test('shop: SD validation error keeps the order editable @mobile', async ({ page, request }) => {
+  const before = await sdState(request);
   await sdScript(request, ['validation']);
   await shopLogin(page);
   await page.getByRole('link', { name: 'Новый заказ' }).first().click();
@@ -67,7 +68,7 @@ test('shop: SD validation error keeps the order editable @mobile', async ({ page
   await expect(page.getByText('Sales Doctor отклонил заказ')).toBeVisible();
   await expect(page.getByText('Product is blocked')).toBeVisible();
   // nothing reached SD and the shop can fix the order and try again
-  const state = await sdState(request);
-  expect(Object.values(state.orders).every((o) => o.orderProducts.length > 0)).toBe(true);
+  const after = await sdState(request);
+  expect(Object.keys(after.orders)).toEqual(Object.keys(before.orders));
   await expect(page.getByTestId('scanner-input')).toBeEnabled();
 });

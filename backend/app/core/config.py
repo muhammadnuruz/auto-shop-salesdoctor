@@ -130,6 +130,7 @@ class Settings(BaseSettings):
     SENTRY_TRACES_SAMPLE_RATE: float = Field(0.0, ge=0, le=1)
     APP_RELEASE: str = ""  # e.g. git sha, shown in Sentry
     RL_CLIENT_ERRORS_PER_MIN: int = Field(20, ge=1)  # browser error reports per IP
+    RL_CLIENT_ERRORS_GLOBAL_PER_MIN: int = Field(300, ge=1)  # all clients together
 
     # retention (daily arq job)
     SESSION_PURGE_AFTER_DAYS: int = Field(7, ge=1)

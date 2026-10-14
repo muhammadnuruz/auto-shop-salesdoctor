@@ -31,7 +31,9 @@ services:
     ports: !reset []
     logging: *logging
     healthcheck:
-      test: ["CMD", "python", "-m", "app.healthcheck", "http", "http://localhost:8000/health/ready"]
+      # liveness only (/health: the process answers). Readiness (/health/ready: DB + Redis)
+      # must NOT trigger restarts: a DB restart would otherwise kill in-flight SD calls
+      test: ["CMD", "python", "-m", "app.healthcheck", "http", "http://localhost:8000/health"]
       interval: 20s
       timeout: 10s
       retries: 3

@@ -5,7 +5,7 @@ failures in a file and, after ``--max-failures``, sends SIGTERM to PID 1. The pr
 and the ``restart: unless-stopped`` policy brings the container back. No Docker socket is
 needed (no autoheal sidecar).
 
-    python -m app.healthcheck http http://localhost:8000/health/ready
+    python -m app.healthcheck http http://localhost:8000/health   # liveness, not readiness
     python -m app.healthcheck arq          # worker: arq health key in Redis
 """
 
@@ -63,7 +63,7 @@ def record(ok: bool, max_failures: int, kill: bool = True) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("kind", choices=["http", "arq"])
-    ap.add_argument("url", nargs="?", default="http://localhost:8000/health/ready")
+    ap.add_argument("url", nargs="?", default="http://localhost:8000/health")
     ap.add_argument("--timeout", type=float, default=5.0)
     ap.add_argument("--max-failures", type=int, default=3)
     ap.add_argument("--no-restart", action="store_true", help="only report, never kill PID 1")

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import RedisDep, SettingsDep, check_origin, enforce_rate_limit, get_meta
 from app.core.logging import get_logger
+from app.core.net import rate_buckets
 from app.core.observability import capture_client_error
 from app.core.ratelimit import Limit
 from app.services.audit import RequestMeta
@@ -35,8 +36,16 @@ async def report_client_error(
     settings: SettingsDep,
     meta: Annotated[RequestMeta, Depends(get_meta)],
 ) -> Response:
+    primary, subnet = rate_buckets(meta.ip)  # IPv6: per /64 and /48, not per address
+    per_min = settings.RL_CLIENT_ERRORS_PER_MIN
     await enforce_rate_limit(
-        redis, [Limit(f"clienterr:{meta.ip}", settings.RL_CLIENT_ERRORS_PER_MIN, 60)]
+        redis,
+        [
+            Limit(f"clienterr:{primary}", per_min, 60),
+            Limit(f"clienterr:net:{subnet}", per_min * 5, 60),
+            # global cap: an unauthenticated endpoint must not flood logs / the Sentry quota
+            Limit("clienterr:all", settings.RL_CLIENT_ERRORS_GLOBAL_PER_MIN, 60),
+        ],
     )
     # keep only the path: query strings / fragments may carry tokens or slugs + phones
     path = urlsplit(body.url).path if body.url else None

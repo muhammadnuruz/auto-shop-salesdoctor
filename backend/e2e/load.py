@@ -53,7 +53,7 @@ class Stats:
     def add(self, op: str, ms: float, status: int) -> None:
         self.samples[op].append(ms)
         self.statuses[f"{op}:{status}"] += 1
-        if status >= 500 or status in (0, 429):
+        if not 200 <= status < 300:  # 409/422 too: "0 errors" must mean every step worked
             self.errors[op] += 1
 
 
@@ -257,6 +257,12 @@ async def main_async(args: argparse.Namespace) -> int:
     print(f"error rate: {error_rate:.2%}")
     if error_rate > 0.01:
         failed = True
+    accepted = stats.statuses.get("submit:200", 0)
+    if len(sd["orders"]) != accepted:  # every accepted submit is exactly one SD order
+        print(f"MISMATCH: {accepted} submits answered 200 but fake SD holds {len(sd['orders'])}")
+        failed = True
+    if args.report_only and error_rate <= 0.01 and len(sd["orders"]) == accepted:
+        return 0  # shared CI runners: latency is reported, not enforced
     return 1 if failed else 0
 
 
@@ -272,6 +278,9 @@ def main() -> int:
     ap.add_argument("--sd-latency", type=int, default=150, help="fake SD delay per call, ms")
     ap.add_argument("--think-min", type=float, default=0.0, help="min seconds between actions")
     ap.add_argument("--think-max", type=float, default=0.0, help="max seconds (0 = stress)")
+    ap.add_argument(
+        "--report-only", action="store_true", help="do not fail on p95 budgets (CI runners)"
+    )
     args = ap.parse_args()
     if args.shops > LOAD_CLIENTS:
         raise SystemExit(f"--shops must be <= {LOAD_CLIENTS} (seeded load shops)")

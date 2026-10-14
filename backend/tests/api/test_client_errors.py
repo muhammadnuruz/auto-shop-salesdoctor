@@ -28,3 +28,18 @@ async def test_client_error_report_is_logged_rate_limited_and_stripped(
     assert bad.status_code == 403
     too_long = await api.post("/api/client-errors", {"message": "x" * 600}, csrf=False)
     assert too_long.status_code in (422, 429)
+
+
+async def test_client_errors_have_a_global_cap(app_factory: Any) -> None:
+    api: Api = await app_factory(
+        make_settings(RL_CLIENT_ERRORS_PER_MIN=100, RL_CLIENT_ERRORS_GLOBAL_PER_MIN=3)
+    )
+    other: Api = await app_factory(
+        make_settings(RL_CLIENT_ERRORS_PER_MIN=100, RL_CLIENT_ERRORS_GLOBAL_PER_MIN=3),
+        client_host="10.9.9.9",
+    )
+    body = {"message": "x"}
+    codes = [(await api.post("/api/client-errors", body, csrf=False)).status_code for _ in range(3)]
+    assert codes == [204, 204, 204]
+    # a different client (other /24) is still limited by the global cap
+    assert (await other.post("/api/client-errors", body, csrf=False)).status_code == 429

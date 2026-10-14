@@ -115,7 +115,7 @@ jobs:
         env:
           CI: "1"
       - name: Short load test (realistic profile)
-        run: make e2e-seed LOAD=1 && make load ARGS="--shops 30 --duration 45"
+        run: make e2e-seed LOAD=1 && make load ARGS="--shops 30 --duration 45 --report-only"
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
