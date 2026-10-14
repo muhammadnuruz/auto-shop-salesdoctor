@@ -1,7 +1,9 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AppSettings } from '@/api/types';
 import { adminUser, VIEWER_PERMS } from '@/test/fixtures';
 import { server } from '@/test/server';
@@ -138,6 +140,37 @@ describe('reports page', () => {
   });
 });
 
+describe('reports presets', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('computes "today" in Asia/Tashkent, not in the browser zone', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T20:30:00Z')); // 01:30 on Oct 15 in Tashkent
+    const seen: URLSearchParams[] = [];
+    server.use(
+      me(adminUser()),
+      http.get('*/api/admin/reports/sales', ({ request }) => {
+        const q = new URL(request.url).searchParams;
+        seen.push(q);
+        return HttpResponse.json({
+          group_by: 'client',
+          date_from: q.get('date_from'),
+          date_to: q.get('date_to'),
+          totals: { orders: 0, qty: 0, sum: 0 },
+          rows: [],
+          truncated: false,
+        });
+      }),
+    );
+    renderApp('/admin/reports');
+    const user = userEvent.setup();
+    await waitFor(() => expect(seen.length).toBeGreaterThan(0));
+    expect(seen[0]?.get('date_to')).toBe('2026-10-15');
+    await user.click(screen.getByRole('button', { name: 'Сегодня' }));
+    await waitFor(() => expect(seen.at(-1)?.get('date_from')).toBe('2026-10-15'));
+  });
+});
+
 describe('settings page', () => {
   it('saves sync intervals and phone threshold', async () => {
     let body: Record<string, unknown> | null = null;
@@ -225,6 +258,43 @@ describe('settings page', () => {
     await waitFor(() => expect(tested).toBe(true));
     expect(await screen.findByText('Тестовое сообщение отправлено')).toBeInTheDocument();
     expect(body).toBeNull();
+  });
+
+  it('keeps unsaved Telegram edits when another card saves (health changed)', async () => {
+    server.use(
+      me(adminUser()),
+      http.get('*/api/admin/settings', () => HttpResponse.json(settings())),
+      http.put('*/api/admin/settings', () =>
+        HttpResponse.json(
+          settings({
+            phone_max_clients: { default: 3, override: 5, effective: 5 },
+            telegram: { ...settings().telegram, health: { last_ok_at: '2026-10-14T09:00:00Z' } },
+          }),
+        ),
+      ),
+    );
+    renderApp('/admin/settings');
+    const user = userEvent.setup();
+    const chats = await screen.findByLabelText('ID чатов');
+    await user.type(chats, '-1009{enter}');
+    const phone = screen.getByLabelText('Макс. магазинов на один номер');
+    await user.clear(phone);
+    await user.type(phone, '5');
+    const phoneCard = phone.closest('.MuiPaper-root') as HTMLElement;
+    await user.click(within(phoneCard).getByRole('button', { name: 'Сохранить' }));
+    expect(await screen.findByText('Настройки сохранены')).toBeInTheDocument();
+    expect(screen.getByText('-1009')).toBeInTheDocument();
+  });
+
+  it('validation patterns are the same as the backend ones', () => {
+    const py = readFileSync(
+      resolve(__dirname, '../../../../../backend/app/services/app_settings.py'),
+      'utf8',
+    );
+    const source = (name: string) =>
+      new RegExp(`${name} = re\\.compile\\(r"(.+)"\\)`).exec(py)?.[1];
+    expect(source('CHAT_ID_RE')).toBe(CHAT_ID_RE.source);
+    expect(source('BOT_TOKEN_RE')).toBe(BOT_TOKEN_RE.source);
   });
 
   it('validation patterns match the backend', () => {

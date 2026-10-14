@@ -30,6 +30,7 @@ import { useDebounced } from '@/hooks/useDebounced';
 import { usePaging } from '@/hooks/usePaging';
 import { describeError } from '@/lib/errors';
 import { formatAmount, formatDateTime } from '@/lib/format';
+import { saveBlob } from '@/lib/download';
 import { useCan } from '../AdminContext';
 import { useRefs } from '../queries';
 
@@ -143,14 +144,7 @@ export default function AdminOrdersPage() {
   const exportXlsx = useMutation({
     mutationFn: () => adminOrdersApi.exportXlsx(effective),
     meta: { silent: true },
-    onSuccess: (blob) => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'orders.xlsx';
-      a.click();
-      URL.revokeObjectURL(url);
-    },
+    onSuccess: (blob) => saveBlob(blob, 'orders.xlsx'),
     onError: (e) => enqueueSnackbar(describeError(e, t), { variant: 'error' }),
   });
 

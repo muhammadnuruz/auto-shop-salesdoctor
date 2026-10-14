@@ -214,6 +214,11 @@ async def _delete(db: AsyncSession, key: str) -> None:
         await db.delete(row)
 
 
+async def lock(db: AsyncSession) -> None:
+    """Transaction-scoped advisory lock serialising settings updates (re-entrant)."""
+    await db.execute(select(func.pg_advisory_xact_lock(SETTINGS_LOCK_KEY)))
+
+
 async def apply_update(
     db: AsyncSession, settings: Settings, body: SettingsUpdate, admin_id: int | None
 ) -> None:
@@ -222,7 +227,7 @@ async def apply_update(
     Serialised with a transaction-level advisory lock: the JSON values are read-merged-written,
     so two admins saving different fields at once must not lose one of the changes.
     """
-    await db.execute(select(func.pg_advisory_xact_lock(SETTINGS_LOCK_KEY)))
+    await lock(db)
     raw = await _raw(db)
     if body.sync_intervals is not None:
         current = raw.get(KEY_SYNC_INTERVALS)

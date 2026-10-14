@@ -23,6 +23,7 @@ The bot token is never logged or stored in plain text.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -50,6 +51,7 @@ STALE_AFTER = timedelta(hours=6)
 SYNC_LAG = timedelta(seconds=5)  # sync_run.finished_at is set just before its commit
 EVENT_LOOKBACK = 500  # ids; events committing out of id order are still picked up
 MAX_RETRY_AFTER = 3600
+TICK_BUDGET = 40.0  # seconds; well below the notify lock TTL and DB idle timeouts
 ORDER_EVENTS = ("sd_ok", "sd_error", "outcome_unknown", "reconciled")
 EXHAUSTED_MESSAGE = "reconcile attempts exhausted"
 
@@ -79,8 +81,9 @@ class Cursor:
     sync_at: datetime | None
     sync_id: int
     recent_events: list[int] = field(default_factory=list)  # processed ids in the lookback
-    pending_ref: str | None = None  # message being delivered ("e:<id>" / "s:<id>")
-    pending_done: list[str] = field(default_factory=list)  # chats that already got it
+    # message ref ("e:<id>" / "s:<id>") -> chats that already received it; an entry only
+    # disappears when that message is finished, whatever else is processed in between
+    progress: dict[str, list[str]] = field(default_factory=dict)
     retry_until: datetime | None = None
     health: dict[str, Any] = field(default_factory=dict)
 
@@ -90,8 +93,7 @@ class Cursor:
             "sync_at": _iso(self.sync_at),
             "sync_id": self.sync_id,
             "recent_events": self.recent_events[-EVENT_LOOKBACK:],
-            "pending_ref": self.pending_ref,
-            "pending_done": self.pending_done,
+            "progress": self.progress,
             "retry_until": _iso(self.retry_until),
             "health": self.health,
         }
@@ -106,8 +108,11 @@ class Cursor:
                 sync_at=_parse(raw.get("sync_at")),
                 sync_id=int(raw.get("sync_id") or 0),
                 recent_events=[int(i) for i in raw.get("recent_events") or []],
-                pending_ref=raw.get("pending_ref") or None,
-                pending_done=[str(c) for c in raw.get("pending_done") or []],
+                progress={
+                    str(k): [str(c) for c in v]
+                    for k, v in (raw.get("progress") or {}).items()
+                    if isinstance(v, list)
+                },
                 retry_until=_parse(raw.get("retry_until")),
                 health=dict(raw.get("health") or {}),
             )
@@ -342,7 +347,7 @@ def _advance(cursor: Cursor, item: Item) -> None:
         cursor.mark_event(item.ev_id)
     if item.sync_key is not None:
         cursor.sync_at, cursor.sync_id = item.sync_key
-    cursor.pending_ref, cursor.pending_done = None, []
+    cursor.progress.pop(item.ref, None)
 
 
 async def _deliver(
@@ -350,10 +355,9 @@ async def _deliver(
 ) -> None:
     """Send to every chat not yet served for this item; raises DeliveryError to block."""
     token = cfg.token or ""  # cfg.active guarantees a token
-    if cursor.pending_ref != item.ref:
-        cursor.pending_ref, cursor.pending_done = item.ref, []
+    done = cursor.progress.setdefault(item.ref, [])
     for chat in cfg.chat_ids:
-        if chat in cursor.pending_done:
+        if chat in done:
             continue
         try:
             await send_message(http, token, chat, text)
@@ -361,7 +365,7 @@ async def _deliver(
             cursor.health.update(
                 last_error=f"chat {chat}: {exc}", last_error_at=_iso(clock.utcnow())
             )
-        cursor.pending_done.append(chat)
+        done.append(chat)
 
 
 async def tick(db: AsyncSession, http: httpx.AsyncClient, settings: Settings) -> int:
@@ -378,6 +382,10 @@ async def tick(db: AsyncSession, http: httpx.AsyncClient, settings: Settings) ->
         return 0  # honouring Telegram's retry_after / back-off
 
     items = await _order_items(db, cursor) + await _sync_items(db, cursor, now)
+    # partially delivered messages first, so their progress is never lost or redone
+    items.sort(key=lambda it: it.ref not in cursor.progress)
+    await db.commit()  # no transaction stays open across Telegram calls
+    started = time.monotonic()
     sent = 0
     for item in items:
         notice = item.notice
@@ -390,7 +398,7 @@ async def tick(db: AsyncSession, http: httpx.AsyncClient, settings: Settings) ->
         if not wanted or notice is None:
             _advance(cursor, item)
             continue
-        if sent >= MAX_PER_TICK:
+        if sent >= MAX_PER_TICK or time.monotonic() - started > TICK_BUDGET:
             break  # the rest goes out on the next tick
         try:
             await _deliver(http, cfg, cursor, item, notice.text)
@@ -404,5 +412,6 @@ async def tick(db: AsyncSession, http: httpx.AsyncClient, settings: Settings) ->
         cursor.retry_until = None
         cursor.health["last_ok_at"] = _iso(now)
         _advance(cursor, item)
+        await _save_cursor(db, cursor)  # a crash later never re-sends this one
     await _save_cursor(db, cursor)
     return sent

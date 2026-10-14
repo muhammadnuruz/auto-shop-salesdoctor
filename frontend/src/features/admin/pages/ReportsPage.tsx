@@ -17,7 +17,6 @@ import TextField from '@mui/material/TextField';
 import ToggleButton from '@mui/material/ToggleButton';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
-import dayjs from 'dayjs';
 import { useSnackbar } from 'notistack';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -26,7 +25,9 @@ import { qk } from '@/api/keys';
 import type { ReportGroupBy } from '@/api/types';
 import { PageHeader } from '@/components/PageHeader';
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/States';
+import { saveBlob } from '@/lib/download';
 import { formatAmount } from '@/lib/format';
+import { dealerNow } from '@/lib/tashkent';
 import { useCan } from '../AdminContext';
 
 const GROUPS: ReportGroupBy[] = ['client', 'product', 'category', 'link', 'agent', 'day'];
@@ -35,7 +36,7 @@ const FMT = 'YYYY-MM-DD';
 type Preset = 'today' | '7' | '30' | 'month';
 
 function presetRange(p: Preset): { from: string; to: string } {
-  const today = dayjs();
+  const today = dealerNow(); // report days are Tashkent days, whatever the browser zone
   switch (p) {
     case 'today':
       return { from: today.format(FMT), to: today.format(FMT) };
@@ -66,14 +67,7 @@ export default function ReportsPage() {
 
   const exportXlsx = useMutation({
     mutationFn: () => reportsApi.salesXlsx(params),
-    onSuccess: (blob) => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `sales_${groupBy}_${range.from}_${range.to}.xlsx`;
-      a.click();
-      URL.revokeObjectURL(url);
-    },
+    onSuccess: (blob) => saveBlob(blob, `sales_${groupBy}_${range.from}_${range.to}.xlsx`),
     onError: () => enqueueSnackbar(t('reports.exportFailed'), { variant: 'error' }),
   });
 

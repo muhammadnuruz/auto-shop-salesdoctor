@@ -390,7 +390,16 @@ export default function SettingsPage() {
           <SdCard s={q.data} />
           <SyncCard key={JSON.stringify(q.data.sync_intervals)} s={q.data} />
           <PhoneCard key={JSON.stringify(q.data.phone_max_clients)} s={q.data} />
-          <TelegramCard key={JSON.stringify(q.data.telegram)} s={q.data} />
+          <TelegramCard
+            // not keyed on `health`: it changes with every delivery and must not wipe edits
+            key={JSON.stringify([
+              q.data.telegram.enabled,
+              q.data.telegram.chat_ids,
+              q.data.telegram.events,
+              q.data.telegram.token_configured,
+            ])}
+            s={q.data}
+          />
         </Stack>
       )}
     </>

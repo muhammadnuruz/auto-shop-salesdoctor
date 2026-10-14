@@ -671,3 +671,74 @@ async def test_settings_audit_before_includes_telegram_without_secret(world: Wor
     assert last.before["telegram"]["enabled"] is True
     assert last.before["telegram"]["chat_ids"] == ["42"]
     assert TOKEN not in str(last.before) and TOKEN not in str(last.after)
+
+
+async def test_notifier_keeps_partial_progress_while_other_items_flow(
+    world: World, mock_sd: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Second review, finding 1: a half-delivered message must not be re-sent to the chats
+    that already got it when other messages are processed in between."""
+    now = clock.utcnow()
+    calls: list[tuple[str, str]] = []
+    limited = {"left": 1}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append((body["chat_id"], body["text"][:1]))
+        if body["chat_id"] == "@limited" and limited["left"] > 0:
+            limited["left"] -= 1
+            return httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 120}})
+        return httpx.Response(200, json={"ok": True})
+
+    mock_sd.post(TG).mock(side_effect=handler)
+    async with httpx.AsyncClient() as http:
+        await _tick_at(world, http, monkeypatch, now)
+        await world.admin.put(
+            "/api/admin/settings",
+            {"telegram": {"enabled": True, "bot_token": TOKEN, "chat_ids": ["111", "@limited"]}},
+        )
+        at = now - timedelta(minutes=1)
+        world.session.add(SyncRun(entity="stock", started_at=at, finished_at=at, status="error"))
+        await world.session.commit()
+        await _tick_at(world, http, monkeypatch, now)  # 111 ok, @limited 429
+        await place(world, [("pb", 0, 1)])  # a new order event arrives meanwhile
+        assert await _tick_at(world, http, monkeypatch, now + timedelta(seconds=130)) == 2
+    assert sorted(calls) == sorted(
+        [("111", "🔴"), ("@limited", "🔴"), ("@limited", "🔴"), ("111", "🆕"), ("@limited", "🆕")]
+    )
+
+
+async def test_dispatcher_failed_run_does_not_cover_slot(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.session.add(
+        SyncRun(
+            entity="clients",
+            started_at=datetime.fromtimestamp(T0 + 10, UTC),
+            finished_at=datetime.fromtimestamp(T0 + 11, UTC),
+            status="error",
+        )
+    )
+    await world.session.commit()
+    _at(monkeypatch, T0 + 20)
+    queued = await worker.dispatch_syncs({"sync": world.sync, "redis": FakeArq(world.redis)})
+    assert "clients" in queued
+
+
+async def test_dispatcher_frees_the_claim_when_enqueue_fails(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Broken(FakeArq):
+        async def enqueue_job(self, name: str, *, _job_id: str) -> object:
+            if name == "sync_stock":
+                raise ConnectionError("redis blip")
+            return await super().enqueue_job(name, _job_id=_job_id)
+
+        async def delete(self, key: str) -> Any:
+            return await self.redis.delete(key)
+
+    _at(monkeypatch, T0)
+    queued = await worker.dispatch_syncs({"sync": world.sync, "redis": Broken(world.redis)})
+    assert "stock" not in queued and "products" in queued  # other entities still dispatched
+    retry = await worker.dispatch_syncs({"sync": world.sync, "redis": FakeArq(world.redis)})
+    assert retry == ["stock"]

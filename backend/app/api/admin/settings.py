@@ -51,6 +51,7 @@ async def get_settings(ctx: WriteDep, db: DbDep, settings: SettingsDep) -> dict[
 async def update_settings(
     body: SettingsUpdate, ctx: WriteDep, db: DbDep, settings: SettingsDep, meta: MetaDep
 ) -> dict[str, Any]:
+    await app_settings.lock(db)  # read "before" under the same lock as the write
     before = app_settings.public_view(await app_settings.load(db, settings), settings)
     await app_settings.apply_update(db, settings, body, ctx.user.id)
     audit.record(

@@ -453,7 +453,8 @@ async def link_stats(
     db: DbDep,
     days: Annotated[int, Query(ge=1, le=STATS_MAX_DAYS)] = 30,
 ) -> dict[str, Any]:
-    """Usage of one link: logins (shop sessions), unique shops, orders and sums per day."""
+    """Usage of one link over ``days``: logins and unique shops (from the audit trail), orders
+    and sums per day, top shops; plus all-time totals."""
     link = await _get(db, link_id)
     now = clock.utcnow()
     today = now.astimezone(SD_TZ).date()
@@ -475,7 +476,9 @@ async def link_stats(
         & (AuditLog.action == "shop.login")
     )
     unique_clients = await db.scalar(
-        select(func.count(func.distinct(AuditLog.after["client_id"].astext))).where(login_rows)
+        select(func.count(func.distinct(AuditLog.after["client_id"].astext))).where(
+            login_rows, AuditLog.at >= since
+        )
     )
     tz: ColumnElement[str] = literal_column(f"'{SD_TZ.key}'")
     fmt: ColumnElement[str] = literal_column("'YYYY-MM-DD'")

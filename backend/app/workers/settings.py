@@ -108,7 +108,10 @@ async def dispatch_syncs(ctx: dict[str, Any]) -> list[str]:
         last_started: dict[str, datetime] = dict(
             (
                 await db.execute(
-                    select(SyncRun.entity, func.max(SyncRun.started_at)).group_by(SyncRun.entity)
+                    # failed runs do not cover a slot: the next tick retries
+                    select(SyncRun.entity, func.max(SyncRun.started_at))
+                    .where(SyncRun.status.in_(("ok", "running")))
+                    .group_by(SyncRun.entity)
                 )
             ).all()
         )
@@ -116,22 +119,26 @@ async def dispatch_syncs(ctx: dict[str, Any]) -> list[str]:
     queued: list[str] = []
     for entity, interval in rt.sync_intervals.items():
         slot = now // interval
-        claimed = await redis.set(
-            f"sync:slot:{entity}:{interval}:{slot}", "1", nx=True, ex=interval + 60
-        )
-        if not claimed:
+        key = f"sync:slot:{entity}:{interval}:{slot}"
+        try:
+            if not await redis.set(key, "1", nx=True, ex=interval + 60):
+                continue
+            last = last_started.get(entity)
+            if last is not None and last.timestamp() >= slot * interval:
+                continue  # already ran (or is running) in this slot
+            await redis.enqueue_job(f"sync_{entity}", _job_id=f"sync:{entity}:{interval}:{slot}")
+        except Exception as exc:  # free the slot so the next tick retries it
+            log.warning("sync_dispatch_failed", entity=entity, error=type(exc).__name__)
+            with contextlib.suppress(Exception):
+                await redis.delete(key)
             continue
-        last = last_started.get(entity)
-        if last is not None and last.timestamp() >= slot * interval:
-            continue  # already ran in this slot
-        await redis.enqueue_job(f"sync_{entity}", _job_id=f"sync:{entity}:{interval}:{slot}")
         queued.append(entity)
     return queued
 
 
 async def notify_tick(ctx: dict[str, Any]) -> None:
     sync: SyncContext = ctx["sync"]
-    lock = ctx["redis"].lock("notify:lock", timeout=120)
+    lock = ctx["redis"].lock("notify:lock", timeout=300)  # tick budget is 40 s
     if not await lock.acquire(blocking=False):
         return
     try:
