@@ -430,6 +430,34 @@ describe('order screen: add from catalog', () => {
     expect(bodies['/lines/pa']).toMatchObject({ blocks: 1, pieces: 1 });
     expect(bodies['/lines/pb']).toMatchObject({ blocks: 0, pieces: 1 });
   });
+
+  it('switches to the card view, remembers it, and adds from a card', async () => {
+    localStorage.removeItem('catalog-view');
+    const a = catalogItem({ product_ref: 'pa', name: 'Filter A' });
+    const fake = new FakeOrders({}, [a]);
+    await open(fake);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Добавить из списка' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Добавить из списка' });
+    expect(await within(dialog).findByRole('table')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Списком' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    await user.click(within(dialog).getByRole('button', { name: 'Карточками' }));
+    expect(within(dialog).queryByRole('table')).not.toBeInTheDocument();
+    const cards = within(dialog).getByRole('list', { name: 'Добавить из списка' });
+    expect(within(cards).getAllByRole('listitem')).toHaveLength(1);
+    expect(localStorage.getItem('catalog-view')).toBe('grid');
+
+    await user.click(within(cards).getByRole('button', { name: 'В штуках: Filter A +' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Добавить (1)' }));
+    await waitFor(() => expect(fake.callsTo('PATCH', '/lines/')).toHaveLength(1), {
+      timeout: 3000,
+    });
+    localStorage.removeItem('catalog-view');
+  });
 });
 
 describe('order screen: layouts', () => {

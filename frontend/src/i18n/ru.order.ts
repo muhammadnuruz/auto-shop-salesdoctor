@@ -93,6 +93,9 @@ export const ordersRu = {
     catalogSearch: 'Название, код или штрихкод',
     catalogEmpty: 'Товары не найдены',
     catalogAdd: 'Добавить ({{count}})',
+    catalogView: 'Вид списка',
+    viewList: 'Списком',
+    viewGrid: 'Карточками',
     importTitle: 'Импорт из файла',
     importHelp:
       'Файл .xlsx или .csv (до 2 МБ) со столбцами «штрихкод/код» (или «название») и «кол-во» (при необходимости «блоки»).',

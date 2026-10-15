@@ -96,6 +96,9 @@ export const ordersUz: DeepStrings<typeof ordersRu> = {
     catalogSearch: 'Nomi, kodi yoki shtrixkodi',
     catalogEmpty: 'Mahsulotlar topilmadi',
     catalogAdd: "Qo'shish ({{count}})",
+    catalogView: "Ro'yxat ko'rinishi",
+    viewList: "Ro'yxat",
+    viewGrid: 'Kartochkalar',
     importTitle: 'Fayldan import',
     importHelp:
       "Ustunlari «shtrixkod/kod» (yoki «nomi») va «soni» (kerak bo'lsa «blok») bo'lgan .xlsx yoki .csv fayl (2 MB gacha).",

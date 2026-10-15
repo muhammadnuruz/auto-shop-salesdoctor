@@ -1,6 +1,9 @@
+import GridViewIcon from '@mui/icons-material/GridView';
 import SearchIcon from '@mui/icons-material/Search';
+import ViewListIcon from '@mui/icons-material/ViewList';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import Card from '@mui/material/Card';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
@@ -16,6 +19,8 @@ import TableHead from '@mui/material/TableHead';
 import TablePagination from '@mui/material/TablePagination';
 import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
+import ToggleButton from '@mui/material/ToggleButton';
+import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import Typography from '@mui/material/Typography';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -54,6 +59,25 @@ interface Props {
 
 const SIZE = 30;
 
+type View = 'list' | 'grid';
+const VIEW_KEY = 'catalog-view';
+
+function readView(): View {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'list';
+  } catch {
+    return 'list';
+  }
+}
+
+function saveView(v: View) {
+  try {
+    localStorage.setItem(VIEW_KEY, v);
+  } catch {
+    // storage unavailable (private mode): the choice just is not remembered
+  }
+}
+
 /** Catalog browser: category filter, search, pagination, multi-add with quantities. */
 export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd }: Props) {
   const { t } = useTranslation();
@@ -61,6 +85,7 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
   const [category, setCategory] = useState('');
   const [page, setPage] = useState(0);
   const [picked, setPicked] = useState<Record<string, Selected>>({});
+  const [view, setView] = useState<View>(readView);
   const q = useDebounced(search.trim());
 
   const cats = useQuery({
@@ -88,6 +113,29 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
       void _drop;
       return next.blocks === 0 && next.pieces === 0 ? rest : { ...rest, [item.product_ref]: next };
     });
+
+  const blocksField = (it: CatalogItem, sel: Selected | undefined) => (
+    <QtyField
+      integer
+      label={`${t('order.colBlocks')}: ${it.name}`}
+      value={sel?.blocks ?? 0}
+      disabled={!hasPack(it.pack_quantity)}
+      onChange={(blocks) => setQty(it, { blocks })}
+    />
+  );
+  const piecesField = (it: CatalogItem, sel: Selected | undefined) => (
+    <QtyField
+      label={`${t('order.colPieces')}: ${it.name}`}
+      value={sel?.pieces ?? 0}
+      onChange={(pieces) => setQty(it, { pieces })}
+    />
+  );
+  const subtitle = (it: CatalogItem) =>
+    `${it.category_name ?? ''}${
+      hasPack(it.pack_quantity)
+        ? ` · ${t('order.perBlock', { n: formatAmount(it.pack_quantity) })}`
+        : ''
+    }`;
 
   const close = () => {
     setPicked({});
@@ -136,10 +184,30 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
               htmlInput: { maxLength: 100 },
             }}
           />
+          <ToggleButtonGroup
+            exclusive
+            size="small"
+            value={view}
+            aria-label={t('order.catalogView')}
+            onChange={(_, v: View | null) => {
+              if (v) {
+                setView(v);
+                saveView(v);
+              }
+            }}
+            sx={{ alignSelf: { xs: 'flex-end', sm: 'center' }, flexShrink: 0 }}
+          >
+            <ToggleButton value="list" aria-label={t('order.viewList')} title={t('order.viewList')}>
+              <ViewListIcon />
+            </ToggleButton>
+            <ToggleButton value="grid" aria-label={t('order.viewGrid')} title={t('order.viewGrid')}>
+              <GridViewIcon />
+            </ToggleButton>
+          </ToggleButtonGroup>
         </Stack>
         {list.isError && <ErrorState error={list.error} onRetry={() => void list.refetch()} />}
         {list.isSuccess && items.length === 0 && <EmptyState title={t('order.catalogEmpty')} />}
-        {items.length > 0 && (
+        {items.length > 0 && view === 'list' && (
           <TableContainer>
             <Table size="small" aria-label={t('order.catalogTitle')}>
               <TableHead>
@@ -169,10 +237,7 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
                           {it.name}
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
-                          {it.category_name ?? ''}
-                          {hasPack(it.pack_quantity)
-                            ? ` · ${t('order.perBlock', { n: formatAmount(it.pack_quantity) })}`
-                            : ''}
+                          {subtitle(it)}
                         </Typography>
                       </TableCell>
                       <TableCell align="right">
@@ -181,28 +246,107 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
                       <TableCell align="right">
                         {it.stock == null ? '—' : formatAmount(it.stock)}
                       </TableCell>
-                      <TableCell>
-                        <QtyField
-                          integer
-                          label={`${t('order.colBlocks')}: ${it.name}`}
-                          value={sel?.blocks ?? 0}
-                          disabled={!hasPack(it.pack_quantity)}
-                          onChange={(blocks) => setQty(it, { blocks })}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <QtyField
-                          label={`${t('order.colPieces')}: ${it.name}`}
-                          value={sel?.pieces ?? 0}
-                          onChange={(pieces) => setQty(it, { pieces })}
-                        />
-                      </TableCell>
+                      <TableCell>{blocksField(it, sel)}</TableCell>
+                      <TableCell>{piecesField(it, sel)}</TableCell>
                     </TableRow>
                   );
                 })}
               </TableBody>
             </Table>
           </TableContainer>
+        )}
+        {items.length > 0 && view === 'grid' && (
+          <Box
+            component="ul"
+            aria-label={t('order.catalogTitle')}
+            sx={{
+              listStyle: 'none',
+              m: 0,
+              p: 0,
+              display: 'grid',
+              gap: 1.5,
+              gridTemplateColumns: {
+                xs: 'repeat(2, minmax(0, 1fr))',
+                sm: 'repeat(3, minmax(0, 1fr))',
+                md: 'repeat(4, minmax(0, 1fr))',
+                lg: 'repeat(5, minmax(0, 1fr))',
+              },
+            }}
+          >
+            {items.map((it) => {
+              const sel = picked[it.product_ref];
+              return (
+                <Card
+                  component="li"
+                  key={it.product_ref}
+                  variant="outlined"
+                  sx={{
+                    p: 1,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 0.75,
+                    borderColor: sel ? 'primary.main' : 'divider',
+                    bgcolor: sel ? 'action.selected' : 'background.paper',
+                  }}
+                >
+                  <ProductThumb
+                    fill
+                    name={it.name}
+                    thumbUrl={it.thumb_url}
+                    imageUrl={it.image_url}
+                  />
+                  <Typography
+                    variant="body2"
+                    fontWeight={600}
+                    title={it.name ?? undefined}
+                    sx={{
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                      minHeight: '2.86em',
+                      lineHeight: 1.43,
+                    }}
+                  >
+                    {it.name}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" noWrap>
+                    {subtitle(it) || '\u00a0'}
+                  </Typography>
+                  <Stack direction="row" justifyContent="space-between" alignItems="baseline">
+                    <Typography variant="subtitle2" fontWeight={700}>
+                      {it.price == null ? '—' : formatAmount(it.price)}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {t('order.colStock')}: {it.stock == null ? '—' : formatAmount(it.stock)}
+                    </Typography>
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ mt: 'auto' }}>
+                    <Stack
+                      direction={{ xs: 'column', sm: 'row' }}
+                      alignItems="center"
+                      justifyContent="space-between"
+                    >
+                      <Typography variant="caption" color="text.secondary">
+                        {t('order.colBlocks')}
+                      </Typography>
+                      {blocksField(it, sel)}
+                    </Stack>
+                    <Stack
+                      direction={{ xs: 'column', sm: 'row' }}
+                      alignItems="center"
+                      justifyContent="space-between"
+                    >
+                      <Typography variant="caption" color="text.secondary">
+                        {t('order.colPieces')}
+                      </Typography>
+                      {piecesField(it, sel)}
+                    </Stack>
+                  </Stack>
+                </Card>
+              );
+            })}
+          </Box>
         )}
         <Box>
           <TablePagination
