@@ -5,6 +5,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import ColumnElement, and_, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +34,26 @@ BARCODE_PATTERN = r"^[0-9]{8,14}$"
 class ProductPatch(BaseModel):
     hidden: bool | None = None
     note: str | None = Field(None, max_length=1000)
+
+
+BULK_MAX = 10_000
+
+
+class BulkHiddenIn(BaseModel):
+    sd_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
+        min_length=1, max_length=BULK_MAX
+    )
+    hidden: bool
+
+
+class BulkHiddenOut(BaseModel):
+    updated: int
+    not_found: int
+
+
+class ProductIdsOut(BaseModel):
+    total: int
+    sd_ids: list[str]
 
 
 class BarcodeIn(BaseModel):
@@ -182,28 +203,16 @@ def _select() -> Any:
     )
 
 
-@router.get("", response_model=ProductListOut, response_model_exclude_unset=True)
-async def list_products(
-    ctx: ReadDep,
-    db: DbDep,
-    q: Annotated[str | None, Query(max_length=100)] = None,
-    active: bool | None = None,
-    hidden: bool | None = None,
-    has_barcode: bool | None = None,
-    category: Annotated[str | None, Query(max_length=64)] = None,
-    price_type: Annotated[str | None, Query(max_length=64)] = None,
-    warehouse: Annotated[str | None, Query(max_length=64)] = None,
-    limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
-) -> dict[str, Any]:
-    if price_type is not None and not await db.scalar(
-        select(SdPriceType.id).where(SdPriceType.sd_id == price_type, SdPriceType.kind == "sale")
-    ):
-        raise problem(422, "unknown_price_type", message="Unknown sale price type")
-    if warehouse is not None and not await db.scalar(
-        select(SdWarehouse.id).where(SdWarehouse.sd_id == warehouse)
-    ):
-        raise problem(422, "unknown_warehouse", message="Unknown warehouse")
+def _filters(
+    *,
+    q: str | None,
+    active: bool | None,
+    hidden: bool | None,
+    has_barcode: bool | None,
+    category: str | None,
+) -> list[ColumnElement[bool]]:
+    """WHERE conditions shared by the list and the "select all matching" id query.
+    Callers must outer-join ProductSetting (``hidden`` filter)."""
     conds: list[ColumnElement[bool]] = []
     if q:
         conds.append(
@@ -226,6 +235,32 @@ async def list_products(
         conds.append(exists if has_barcode else ~exists)
     if category:
         conds.append(SdProduct.category_sd_id == category)
+    return conds
+
+
+@router.get("", response_model=ProductListOut, response_model_exclude_unset=True)
+async def list_products(
+    ctx: ReadDep,
+    db: DbDep,
+    q: Annotated[str | None, Query(max_length=100)] = None,
+    active: bool | None = None,
+    hidden: bool | None = None,
+    has_barcode: bool | None = None,
+    category: Annotated[str | None, Query(max_length=64)] = None,
+    price_type: Annotated[str | None, Query(max_length=64)] = None,
+    warehouse: Annotated[str | None, Query(max_length=64)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+    if price_type is not None and not await db.scalar(
+        select(SdPriceType.id).where(SdPriceType.sd_id == price_type, SdPriceType.kind == "sale")
+    ):
+        raise problem(422, "unknown_price_type", message="Unknown sale price type")
+    if warehouse is not None and not await db.scalar(
+        select(SdWarehouse.id).where(SdWarehouse.sd_id == warehouse)
+    ):
+        raise problem(422, "unknown_warehouse", message="Unknown warehouse")
+    conds = _filters(q=q, active=active, hidden=hidden, has_barcode=has_barcode, category=category)
     total = await db.scalar(
         select(func.count())
         .select_from(SdProduct)
@@ -243,6 +278,74 @@ async def list_products(
     ).all()
     items = await _items(db, list(rows), price_type=price_type, warehouse=warehouse)
     return {"total": total or 0, "items": items}
+
+
+@router.get("/ids", response_model=ProductIdsOut)
+async def list_product_ids(
+    ctx: ReadDep,
+    db: DbDep,
+    q: Annotated[str | None, Query(max_length=100)] = None,
+    active: bool | None = None,
+    hidden: bool | None = None,
+    has_barcode: bool | None = None,
+    category: Annotated[str | None, Query(max_length=64)] = None,
+) -> dict[str, Any]:
+    """SD ids of every product matching the list filters ("select all" across pages)."""
+    conds = _filters(q=q, active=active, hidden=hidden, has_barcode=has_barcode, category=category)
+    ids = (
+        await db.scalars(
+            select(SdProduct.sd_id)
+            .outerjoin(ProductSetting, ProductSetting.product_id == SdProduct.id)
+            .where(*conds)
+            .order_by(SdProduct.name, SdProduct.id)
+            .limit(BULK_MAX)
+        )
+    ).all()
+    return {"total": len(ids), "sd_ids": list(ids)}
+
+
+@router.post("/bulk", response_model=BulkHiddenOut)
+async def bulk_hidden(
+    body: BulkHiddenIn, ctx: WriteDep, db: DbDep, meta: MetaDep
+) -> dict[str, Any]:
+    """Hide or show many products in the shop catalog at once (one audit entry)."""
+    wanted = list(dict.fromkeys(body.sd_ids))
+    found = (
+        await db.execute(select(SdProduct.id, SdProduct.sd_id).where(SdProduct.sd_id.in_(wanted)))
+    ).all()
+    if found:
+        stmt = pg_insert(ProductSetting).values(
+            [
+                {"product_id": pid, "hidden": body.hidden, "updated_by": ctx.user.id}
+                for pid, _ in found
+            ]
+        )
+        await db.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[ProductSetting.product_id],
+                set_={
+                    "hidden": stmt.excluded.hidden,
+                    "updated_by": stmt.excluded.updated_by,
+                    "updated_at": func.now(),
+                },
+            )
+        )
+    audit.record(
+        db,
+        actor_type="admin",
+        actor_id=ctx.user.id,
+        action="product.bulk_update",
+        entity_type="product",
+        entity_id="bulk",
+        after={
+            "hidden": body.hidden,
+            "count": len(found),
+            "sd_ids": [sd for _, sd in found][:200],
+        },
+        meta=meta,
+    )
+    await db.commit()
+    return {"updated": len(found), "not_found": len(wanted) - len(found)}
 
 
 async def _product(db: AsyncSession, sd_id: str) -> SdProduct:

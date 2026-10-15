@@ -86,6 +86,44 @@ def actions_count(items: list[str], name: str) -> int:
     return items.count(name)
 
 
+async def test_product_ids_follow_list_filters(world: World) -> None:
+    full = (await world.admin.get(P, params={"limit": 200})).json()
+    ids = (await world.admin.get(f"{P}/ids")).json()
+    assert ids["total"] == full["total"] and ids["sd_ids"] == [i["sd_id"] for i in full["items"]]
+    assert (await world.admin.get(f"{P}/ids", params={"hidden": "true"})).json() == {
+        "total": 1,
+        "sd_ids": ["phidden"],
+    }
+    assert (await world.admin.get(f"{P}/ids", params={"q": "cream"})).json()["sd_ids"] == ["pa"]
+
+
+async def test_bulk_hide_and_show(world: World) -> None:
+    r = await world.admin.post(f"{P}/bulk", {"sd_ids": ["pa", "pb", "pa", "ghost"], "hidden": True})
+    assert r.status_code == 200 and r.json() == {"updated": 2, "not_found": 1}
+    shop = (await world.shop.get("/api/shop/catalog", params={"price_type": "d0_2"})).json()
+    refs = {i["product_ref"] for i in shop["items"]}
+    assert "pa" not in refs and "pb" not in refs
+    hidden = (await world.admin.get(f"{P}/ids", params={"hidden": "true"})).json()["sd_ids"]
+    assert set(hidden) == {"pa", "pb", "phidden"}
+
+    # existing settings (note) survive the bulk upsert
+    await world.admin.patch(f"{P}/pa", {"note": "keep"})
+    r = await world.admin.post(f"{P}/bulk", {"sd_ids": ["pa", "pb", "phidden"], "hidden": False})
+    assert r.json() == {"updated": 3, "not_found": 0}
+    pa = next(i for i in (await world.admin.get(P, params={"q": "cream"})).json()["items"])
+    assert pa["hidden"] is False and pa["note"] == "keep"
+    assert (await world.admin.get(f"{P}/ids", params={"hidden": "true"})).json()["total"] == 0
+    assert actions_count(await actions(world), "product.bulk_update") == 2
+
+
+async def test_bulk_validation_and_rbac(world: World, app_factory: ApiFactory) -> None:
+    assert (await world.admin.post(f"{P}/bulk", {"sd_ids": [], "hidden": True})).status_code == 422
+    assert (await world.admin.post(f"{P}/bulk", {"sd_ids": ["pa"]})).status_code == 422
+    v = await viewer(world, app_factory)
+    assert (await v.get(f"{P}/ids")).status_code == 200
+    assert (await v.post(f"{P}/bulk", {"sd_ids": ["pa"], "hidden": True})).status_code == 403
+
+
 # ----------------------------------------------------------------------------- barcodes
 
 
