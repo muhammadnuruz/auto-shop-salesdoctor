@@ -262,6 +262,14 @@ export interface ProductListParams extends Page {
 export const productsApi = {
   list: (p: ProductListParams, signal?: AbortSignal) =>
     request<Paged<AdminProduct>>(`${A}/products`, { query: { ...p }, signal }),
+  /** SD ids of every product matching the list filters (for "select all") */
+  ids: (p: Omit<ProductListParams, 'limit' | 'offset' | 'price_type' | 'warehouse'>) =>
+    request<{ total: number; sd_ids: string[] }>(`${A}/products/ids`, { query: { ...p } }),
+  bulkHidden: (sdIds: string[], hidden: boolean) =>
+    request<{ updated: number; not_found: number }>(`${A}/products/bulk`, {
+      method: 'POST',
+      body: { sd_ids: sdIds, hidden },
+    }),
   patch: (sdId: string, body: { hidden?: boolean; note?: string | null }) =>
     request<AdminProduct>(`${A}/products/${encodeURIComponent(sdId)}`, {
       method: 'PATCH',

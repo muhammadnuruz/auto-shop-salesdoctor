@@ -159,6 +159,27 @@ export class FakeOrders {
         };
         return this.bump();
       }),
+      http.post(`${base}/orders/import/apply`, async ({ request }) => {
+        const body = (await request.json()) as {
+          lines: { product_ref: string; blocks: number; pieces: number }[];
+        };
+        this.note('POST', '/import/apply', body);
+        let lines = [...this.order.lines];
+        for (const it of body.lines) {
+          const i = lines.findIndex((l) => l.product_ref === it.product_ref);
+          const cur = lines[i];
+          if (cur) {
+            lines[i] = { ...cur, blocks: cur.blocks + it.blocks, pieces: cur.pieces + it.pieces };
+          } else {
+            lines = [
+              ...lines,
+              { ...this.line(it.product_ref), blocks: it.blocks, pieces: it.pieces },
+            ];
+          }
+        }
+        this.order = { ...this.order, lines };
+        return this.bump();
+      }),
       http.delete(`${base}/orders/${ORDER_ID}/lines/:ref`, ({ params }) => {
         this.note('DELETE', `/lines/${String(params.ref)}`, null);
         this.order = {

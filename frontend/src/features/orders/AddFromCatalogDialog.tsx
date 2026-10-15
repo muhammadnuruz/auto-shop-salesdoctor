@@ -1,9 +1,10 @@
-import GridViewIcon from '@mui/icons-material/GridView';
 import SearchIcon from '@mui/icons-material/Search';
-import ViewListIcon from '@mui/icons-material/ViewList';
 import Box from '@mui/material/Box';
+import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
+import Checkbox from '@mui/material/Checkbox';
+import CircularProgress from '@mui/material/CircularProgress';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
@@ -19,15 +20,15 @@ import TableHead from '@mui/material/TableHead';
 import TablePagination from '@mui/material/TablePagination';
 import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
-import ToggleButton from '@mui/material/ToggleButton';
-import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import Typography from '@mui/material/Typography';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CatalogItem } from '@/api/types';
 import { EmptyState, ErrorState } from '@/components/States';
+import { ViewToggle } from '@/components/ViewToggle';
 import { useDebounced } from '@/hooks/useDebounced';
+import { useViewMode } from '@/hooks/useViewMode';
 import { formatAmount } from '@/lib/format';
 import { ProductThumb } from './ProductThumb';
 import { QtyField } from './QtyField';
@@ -58,25 +59,10 @@ interface Props {
 }
 
 const SIZE = 30;
-
-type View = 'list' | 'grid';
-const VIEW_KEY = 'catalog-view';
-
-function readView(): View {
-  try {
-    return localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'list';
-  } catch {
-    return 'list';
-  }
-}
-
-function saveView(v: View) {
-  try {
-    localStorage.setItem(VIEW_KEY, v);
-  } catch {
-    // storage unavailable (private mode): the choice just is not remembered
-  }
-}
+/** "select all" fetches the filtered catalog in pages of this size */
+const FETCH_SIZE = 100;
+/** server-side limit of lines per order (MAX_LINES) */
+const MAX_PICK = 500;
 
 /** Catalog browser: category filter, search, pagination, multi-add with quantities. */
 export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd }: Props) {
@@ -85,7 +71,10 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
   const [category, setCategory] = useState('');
   const [page, setPage] = useState(0);
   const [picked, setPicked] = useState<Record<string, Selected>>({});
-  const [view, setView] = useState<View>(readView);
+  const [view, setView] = useViewMode('catalog-view');
+  const [selectingAll, setSelectingAll] = useState(false);
+  const [notice, setNotice] = useState<{ severity: 'info' | 'error'; text: string } | null>(null);
+  const selectAllAbort = useRef<AbortController | null>(null);
   const q = useDebounced(search.trim());
 
   const cats = useQuery({
@@ -114,6 +103,64 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
       return next.blocks === 0 && next.pieces === 0 ? rest : { ...rest, [item.product_ref]: next };
     });
 
+  const toggle = (it: CatalogItem) =>
+    picked[it.product_ref] ? setQty(it, { blocks: 0, pieces: 0 }) : setQty(it, { pieces: 1 });
+
+  /** Pick every product matching the current filter (all pages), 1 piece each. Out-of-stock
+   * products are skipped (Sales Doctor would reject the order) and the order line limit holds. */
+  const selectAll = async () => {
+    selectAllAbort.current?.abort();
+    const ac = new AbortController();
+    selectAllAbort.current = ac;
+    setSelectingAll(true);
+    setNotice(null);
+    try {
+      const found: CatalogItem[] = [];
+      let skipped = 0;
+      let capped = false;
+      for (let p = 1; ; p++) {
+        const r = await source.search({ q, category, page: p, size: FETCH_SIZE }, ac.signal);
+        for (const it of r.items) {
+          if (it.stock != null && it.stock <= 0) skipped++;
+          else if (found.length < MAX_PICK) found.push(it);
+          else capped = true;
+        }
+        if (r.items.length < FETCH_SIZE || p * FETCH_SIZE >= r.total) break;
+      }
+      if (ac.signal.aborted) return;
+      setPicked((cur) => {
+        const next = { ...cur };
+        for (const it of found) next[it.product_ref] ??= { item: it, blocks: 0, pieces: 1 };
+        return next;
+      });
+      const parts = [t('order.selectAllDone', { count: found.length })];
+      if (skipped > 0) parts.push(t('order.selectAllSkipped', { count: skipped }));
+      if (capped) parts.push(t('order.selectAllCapped', { max: MAX_PICK }));
+      setNotice({ severity: 'info', text: parts.join('; ') });
+    } catch {
+      if (!ac.signal.aborted) setNotice({ severity: 'error', text: t('order.selectAllFailed') });
+    } finally {
+      if (selectAllAbort.current === ac) setSelectingAll(false);
+    }
+  };
+  const clearAll = () => {
+    selectAllAbort.current?.abort();
+    setSelectingAll(false);
+    setPicked({});
+    setNotice(null);
+  };
+  const pageAll = items.length > 0 && items.every((it) => picked[it.product_ref]);
+  const pageSome = items.some((it) => picked[it.product_ref]);
+  const selectAllBox = (
+    <Checkbox
+      checked={pageAll}
+      indeterminate={!pageAll && (pageSome || selectedCount > 0)}
+      disabled={selectingAll || items.length === 0}
+      onChange={() => (pageAll ? clearAll() : void selectAll())}
+      slotProps={{ input: { 'aria-label': t('order.selectAll') } }}
+    />
+  );
+
   const blocksField = (it: CatalogItem, sel: Selected | undefined) => (
     <QtyField
       integer
@@ -138,6 +185,9 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
     }`;
 
   const close = () => {
+    selectAllAbort.current?.abort();
+    setSelectingAll(false);
+    setNotice(null);
     setPicked({});
     onClose();
   };
@@ -184,27 +234,33 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
               htmlInput: { maxLength: 100 },
             }}
           />
-          <ToggleButtonGroup
-            exclusive
-            size="small"
+          <ViewToggle
             value={view}
-            aria-label={t('order.catalogView')}
-            onChange={(_, v: View | null) => {
-              if (v) {
-                setView(v);
-                saveView(v);
-              }
-            }}
-            sx={{ alignSelf: { xs: 'flex-end', sm: 'center' }, flexShrink: 0 }}
-          >
-            <ToggleButton value="list" aria-label={t('order.viewList')} title={t('order.viewList')}>
-              <ViewListIcon />
-            </ToggleButton>
-            <ToggleButton value="grid" aria-label={t('order.viewGrid')} title={t('order.viewGrid')}>
-              <GridViewIcon />
-            </ToggleButton>
-          </ToggleButtonGroup>
+            onChange={setView}
+            sx={{ alignSelf: { xs: 'flex-end', sm: 'center' } }}
+          />
         </Stack>
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1, minHeight: 42 }}>
+          {selectAllBox}
+          <Typography variant="body2">{t('order.selectAll')}</Typography>
+          {selectingAll && <CircularProgress size={18} />}
+          <Box sx={{ flexGrow: 1 }} />
+          {selectedCount > 0 && (
+            <>
+              <Typography variant="body2" color="text.secondary">
+                {t('order.selectedCount', { count: selectedCount })}
+              </Typography>
+              <Button size="small" onClick={clearAll}>
+                {t('order.clearSelection')}
+              </Button>
+            </>
+          )}
+        </Stack>
+        {notice && (
+          <Alert severity={notice.severity} onClose={() => setNotice(null)} sx={{ mb: 1 }}>
+            {notice.text}
+          </Alert>
+        )}
         {list.isError && <ErrorState error={list.error} onRetry={() => void list.refetch()} />}
         {list.isSuccess && items.length === 0 && <EmptyState title={t('order.catalogEmpty')} />}
         {items.length > 0 && view === 'list' && (
@@ -212,6 +268,7 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
             <Table size="small" aria-label={t('order.catalogTitle')}>
               <TableHead>
                 <TableRow>
+                  <TableCell padding="checkbox">{selectAllBox}</TableCell>
                   <TableCell>{t('order.colPhoto')}</TableCell>
                   <TableCell>{t('order.colProduct')}</TableCell>
                   <TableCell align="right">{t('order.colPrice')}</TableCell>
@@ -225,6 +282,15 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
                   const sel = picked[it.product_ref];
                   return (
                     <TableRow key={it.product_ref} hover selected={!!sel}>
+                      <TableCell padding="checkbox">
+                        <Checkbox
+                          checked={!!sel}
+                          onChange={() => toggle(it)}
+                          slotProps={{
+                            input: { 'aria-label': t('order.selectProduct', { name: it.name }) },
+                          }}
+                        />
+                      </TableCell>
                       <TableCell>
                         <ProductThumb
                           name={it.name}
@@ -287,8 +353,26 @@ export function AddFromCatalogDialog({ open, source, fullScreen, onClose, onAdd 
                     gap: 0.75,
                     borderColor: sel ? 'primary.main' : 'divider',
                     bgcolor: sel ? 'action.selected' : 'background.paper',
+                    position: 'relative',
                   }}
                 >
+                  <Checkbox
+                    checked={!!sel}
+                    onChange={() => toggle(it)}
+                    slotProps={{
+                      input: { 'aria-label': t('order.selectProduct', { name: it.name }) },
+                    }}
+                    sx={{
+                      position: 'absolute',
+                      top: 10,
+                      left: 10,
+                      zIndex: 1,
+                      p: 0.25,
+                      bgcolor: 'background.paper',
+                      borderRadius: 1,
+                      '&:hover': { bgcolor: 'background.paper' },
+                    }}
+                  />
                   <ProductThumb
                     fill
                     name={it.name}

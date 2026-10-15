@@ -210,4 +210,63 @@ describe('admin products', () => {
       within(drawer).queryByRole('button', { name: /Удалить штрихкод/ }),
     ).not.toBeInTheDocument();
   });
+
+  it('selects a page, then everything matching the filter, and hides it in bulk', async () => {
+    setup();
+    let idsQuery: URL | null = null;
+    const bulks: unknown[] = [];
+    server.use(
+      http.get('*/api/admin/products', () =>
+        HttpResponse.json({
+          total: 5,
+          items: [product(), product({ sd_id: 'p2', name: 'Air filter' })],
+        }),
+      ),
+      http.get('*/api/admin/products/ids', ({ request }) => {
+        idsQuery = new URL(request.url);
+        return HttpResponse.json({ total: 5, sd_ids: ['p1', 'p2', 'p3', 'p4', 'p5'] });
+      }),
+      http.post('*/api/admin/products/bulk', async ({ request }) => {
+        bulks.push(await request.json());
+        return HttpResponse.json({ updated: 5, not_found: 0 });
+      }),
+    );
+    renderApp('/admin/products');
+    await screen.findByText('Air filter');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('checkbox', { name: 'Выбрать: Oil filter' }));
+    expect(screen.getByText('Выбрано: 1')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('checkbox', { name: 'Выбрать все на странице' }));
+    expect(screen.getByText('Выбрано: 2')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Выбрать все 5 по фильтру' }));
+    expect(await screen.findByText('Выбрано: 5')).toBeInTheDocument();
+    expect(idsQuery).not.toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Скрыть из магазина' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Скрыть 5 товаров из каталога магазинов?');
+    await user.click(within(dialog).getByRole('button', { name: 'Подтвердить' }));
+    await waitFor(() =>
+      expect(bulks).toEqual([{ sd_ids: ['p1', 'p2', 'p3', 'p4', 'p5'], hidden: true }]),
+    );
+    expect(await screen.findByText('Обновлено товаров: 5')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/^Выбрано:/)).not.toBeInTheDocument());
+  });
+
+  it('card view; viewers can select but get no bulk actions', async () => {
+    localStorage.removeItem('admin-products-view');
+    setup(['products.read', 'links.read']);
+    renderApp('/admin/products');
+    await screen.findByText('Oil filter');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Карточками' }));
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    const cards = screen.getByRole('list', { name: 'Товары' });
+    expect(within(cards).getAllByRole('listitem')).toHaveLength(1);
+    await user.click(within(cards).getByRole('checkbox', { name: 'Выбрать: Oil filter' }));
+    expect(screen.getByText('Выбрано: 1')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Скрыть из магазина' })).not.toBeInTheDocument();
+    localStorage.removeItem('admin-products-view');
+  });
 });

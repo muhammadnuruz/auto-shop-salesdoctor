@@ -57,6 +57,8 @@ import { SettingsDialog } from './SettingsDialog';
 import { classifySubmit } from './submit';
 import { useShopOrder, type SaveState } from './useShopOrder';
 
+/** catalog picks above this size are saved with one bulk request (import apply) */
+const BULK_ADD_FROM = 10;
 const BUSY_RETRIES = 5;
 const BUSY_DELAY_MS = 2000;
 const lastPriceKey = (slug: string) => `autoshop.lastPriceType.${slug}`;
@@ -567,7 +569,18 @@ function OrderScreen({
       </Paper>
 
       {editable && !mobile && (
-        <Paper variant="outlined" sx={{ p: 2 }}>
+        // sticky: the total and the submit button stay visible while scrolling long orders
+        <Paper
+          variant="outlined"
+          data-testid="total-bar"
+          sx={{
+            p: 2,
+            position: 'sticky',
+            bottom: 0,
+            zIndex: (th) => th.zIndex.appBar - 1,
+            boxShadow: (th) => th.shadows[6],
+          }}
+        >
           <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={2}>
             <Box>
               <Typography color="text.secondary">{t('order.total')}</Typography>
@@ -613,7 +626,22 @@ function OrderScreen({
         source={source}
         fullScreen={mobile}
         onClose={() => setDialog(null)}
-        onAdd={(items) => editor.addItems(items)}
+        onAdd={(items) =>
+          // many products at once ("select all"): one bulk request instead of one per line
+          items.length >= BULK_ADD_FROM
+            ? void editor
+                .importApply(
+                  items.map(({ item, blocks, pieces }) => ({
+                    product_ref: item.product_ref,
+                    blocks,
+                    pieces,
+                  })),
+                )
+                .catch((e: unknown) =>
+                  enqueueSnackbar(orderErrorMessage(e, t), { variant: 'error' }),
+                )
+            : editor.addItems(items)
+        }
       />
       <ImportDialog
         open={dialog === 'import'}

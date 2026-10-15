@@ -460,6 +460,45 @@ describe('order screen: add from catalog', () => {
   });
 });
 
+describe('order screen: select all in the catalog', () => {
+  it('picks every in-stock product (1 piece each) and adds them in one bulk request', async () => {
+    const items = Array.from({ length: 12 }, (_, i) =>
+      catalogItem({ product_ref: `p${i}`, name: `Item ${i}`, stock: i === 3 ? 0 : 50 }),
+    );
+    const fake = new FakeOrders({}, items);
+    await open(fake);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Добавить из списка' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Добавить из списка' });
+    await within(dialog).findByText('Item 0');
+    await user.click(within(dialog).getAllByRole('checkbox', { name: 'Выбрать все' })[0]!);
+    expect(await within(dialog).findByText('Выбрано: 11')).toBeInTheDocument();
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('без остатка пропущено: 1');
+    expect(within(dialog).getByRole('checkbox', { name: 'Выбрать: Item 3' })).not.toBeChecked();
+
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Выбрать: Item 0' }));
+    expect(within(dialog).getByText('Выбрано: 10')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Добавить (10)' }));
+
+    await waitFor(() => expect(fake.callsTo('POST', '/import/apply')).toHaveLength(1));
+    const body = fake.callsTo('POST', '/import/apply')[0]!.body as {
+      lines: { product_ref: string; blocks: number; pieces: number }[];
+    };
+    expect(body.lines).toHaveLength(10);
+    expect(body.lines.every((l) => l.blocks === 0 && l.pieces === 1)).toBe(true);
+    expect(body.lines.map((l) => l.product_ref)).not.toContain('p3');
+    expect(fake.callsTo('PATCH', '/lines/')).toHaveLength(0);
+  });
+
+  it('desktop: the total + submit bar is sticky', async () => {
+    const fake = new FakeOrders({ lines: [orderLine()] });
+    await open(fake);
+    const bar = await screen.findByTestId('total-bar');
+    expect(bar).toHaveStyle({ position: 'sticky', bottom: '0px' });
+    expect(within(bar).getByRole('button', { name: 'Отправить заказ' })).toBeInTheDocument();
+  });
+});
+
 describe('order screen: layouts', () => {
   const mobileMedia = () => {
     const original = window.matchMedia;
