@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AdminContext, DbDep, MetaDep, ServicesDep, require
 from app.api.schemas import AdminOrderListOut, AdminOrderOut
+from app.core.xlsx import cell
 from app.domain.quantity import MAX_BLOCKS, MAX_PIECES
 from app.integrations.salesdoctor import SDError
 from app.models import AccessLink, SdClient, ShopOrder, ShopOrderEvent
@@ -222,11 +223,7 @@ async def export_orders(
     rows = await _rows(db, f.conds, EXPORT_LIMIT, 0)
     names = await svc.reference_names(db, [r[0] for r in rows])
 
-    def safe(value: Any) -> Any:
-        # neutralise spreadsheet formula injection from user-controlled text
-        if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
-            return "'" + value
-        return value
+    safe = cell
 
     wb = Workbook(write_only=True)
     ws = wb.create_sheet("orders")
@@ -506,8 +503,11 @@ async def _edit_locked(
         await db.rollback()
         raise problem(422, "validation_failed", errors=problems)
     if fresh is not None:
+        # only this order's products: this transaction stays open across the SD call (it is
+        # rolled back if SD refuses), so touching every sd_stock row would block all submits
+        mine = [v.product.sd_id for v in view.lines]
         await apply_to_mirror(
-            db, order.warehouse_sd_id, fresh, force_zero=[v.product.sd_id for v in view.lines]
+            db, order.warehouse_sd_id, {r: fresh[r] for r in mine if r in fresh}, force_zero=mine
         )
     outcome = await push_after_admin_edit(
         db, flow, order, view, client, st, actor, changes, meta, before, lock

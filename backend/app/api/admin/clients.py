@@ -14,6 +14,7 @@ from app.core import clock
 from app.domain.phone import evaluate_phone
 from app.models import ClientPhone, ClientSetting, PhoneFlag, SdClient
 from app.services import audit, sessions
+from app.services.app_settings import phone_max_clients
 
 router = APIRouter(tags=["admin-clients"])
 ReadDep = Annotated[AdminContext, Depends(require("clients.read"))]
@@ -230,7 +231,7 @@ async def override_phone(
     )
     count = count or 0
     if body.status == "auto":
-        status, reason = evaluate_phone(phone_key, count, settings.PHONE_MAX_CLIENTS)
+        status, reason = evaluate_phone(phone_key, count, await phone_max_clients(db, settings))
     else:
         status, reason = body.status, body.reason
     values = {

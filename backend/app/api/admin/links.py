@@ -2,21 +2,25 @@
 
 import secrets
 import string
-from datetime import datetime
+from datetime import datetime, time, timedelta
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AwareDatetime, BaseModel, Field, ValidationError
-from sqlalchemy import ColumnElement, delete, func, or_, select
+from sqlalchemy import ColumnElement, delete, func, literal_column, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.admin.dashboard import PLACED
 from app.api.deps import AdminContext, DbDep, MetaDep, require
 from app.core import clock
 from app.domain.link_settings import LinkSettings, validate_link_settings
-from app.models import AccessLink, LinkClient, SdClient, ShopSession
+from app.models import AccessLink, AuditLog, LinkClient, SdClient, ShopOrder, ShopSession
 from app.services import audit
+from app.services.orders import num
+from app.sync.common import SD_TZ
 
 router = APIRouter(prefix="/links", tags=["admin-links"])
 ReadDep = Annotated[AdminContext, Depends(require("links.read"))]
@@ -439,10 +443,22 @@ async def change_link_clients(
     return {"added": len(add), "removed": removed, "total": total or 0}
 
 
+STATS_MAX_DAYS = 366
+
+
 @router.get("/{link_id}/stats")
-async def link_stats(link_id: int, ctx: ReadDep, db: DbDep) -> dict[str, Any]:
+async def link_stats(
+    link_id: int,
+    ctx: ReadDep,
+    db: DbDep,
+    days: Annotated[int, Query(ge=1, le=STATS_MAX_DAYS)] = 30,
+) -> dict[str, Any]:
+    """Usage of one link over ``days``: logins and unique shops (from the audit trail), orders
+    and sums per day, top shops; plus all-time totals."""
     link = await _get(db, link_id)
     now = clock.utcnow()
+    today = now.astimezone(SD_TZ).date()
+    since = datetime.combine(today - timedelta(days=days - 1), time.min, SD_TZ)
     active_sessions = await db.scalar(
         select(func.count())
         .select_from(ShopSession)
@@ -452,9 +468,99 @@ async def link_stats(link_id: int, ctx: ReadDep, db: DbDep) -> dict[str, Any]:
             ShopSession.expires_at > now,
         )
     )
+    # logins come from the audit trail (kept AUDIT_RETENTION_DAYS); shop_session rows are
+    # purged a week after logout/expiry and would undercount
+    login_rows = (
+        (AuditLog.entity_type == "access_link")
+        & (AuditLog.entity_id == str(link_id))
+        & (AuditLog.action == "shop.login")
+    )
+    unique_clients = await db.scalar(
+        select(func.count(func.distinct(AuditLog.after["client_id"].astext))).where(
+            login_rows, AuditLog.at >= since
+        )
+    )
+    tz: ColumnElement[str] = literal_column(f"'{SD_TZ.key}'")
+    fmt: ColumnElement[str] = literal_column("'YYYY-MM-DD'")
+    a_day = func.to_char(func.timezone(tz, AuditLog.at), fmt)
+    logins: dict[str, int] = dict(
+        (
+            await db.execute(
+                select(a_day, func.count()).where(login_rows, AuditLog.at >= since).group_by(a_day)
+            )
+        ).all()
+    )
+    o_time = func.coalesce(ShopOrder.submitted_at, ShopOrder.created_at)
+    o_day = func.to_char(func.timezone(tz, o_time), fmt)
+    placed = ShopOrder.state.in_(PLACED)
+    per_day = {
+        d: (n, total)
+        for d, n, total in (
+            await db.execute(
+                select(o_day, func.count(), func.coalesce(func.sum(ShopOrder.total_sum), 0))
+                .where(ShopOrder.link_id == link_id, placed, o_time >= since)
+                .group_by(o_day)
+            )
+        ).all()
+    }
+    by_state = {
+        state: {"orders": n, "sum": num(total)}
+        for state, n, total in (
+            await db.execute(
+                select(
+                    ShopOrder.state, func.count(), func.coalesce(func.sum(ShopOrder.total_sum), 0)
+                )
+                .where(ShopOrder.link_id == link_id, o_time >= since)
+                .group_by(ShopOrder.state)
+            )
+        ).all()
+    }
+    all_n, all_sum = (
+        await db.execute(
+            select(func.count(), func.coalesce(func.sum(ShopOrder.total_sum), 0)).where(
+                ShopOrder.link_id == link_id, placed
+            )
+        )
+    ).one()
+    top_clients = [
+        {"client_id": cid, "name": name, "orders": n, "sum": num(total)}
+        for cid, name, n, total in (
+            await db.execute(
+                select(
+                    SdClient.id,
+                    SdClient.name,
+                    func.count(),
+                    func.coalesce(func.sum(ShopOrder.total_sum), 0),
+                )
+                .join(ShopOrder, ShopOrder.client_id == SdClient.id)
+                .where(ShopOrder.link_id == link_id, placed, o_time >= since)
+                .group_by(SdClient.id, SdClient.name)
+                .order_by(func.sum(ShopOrder.total_sum).desc(), SdClient.id)
+                .limit(10)
+            )
+        ).all()
+    ]
+    daily = []
+    for i in range(days):
+        d = (today - timedelta(days=days - 1 - i)).isoformat()
+        n, total = per_day.get(d, (0, 0))
+        daily.append({"date": d, "logins": logins.get(d, 0), "orders": n, "sum": num(total)})
+    period_orders = sum(r["orders"] for r in daily)
     return {
         "login_count": link.login_count,
         "max_logins": link.max_logins,
         "active_sessions": active_sessions or 0,
-        "orders": None,  # placeholder until Phase 4
+        "unique_clients": unique_clients or 0,
+        "orders": {
+            "all_time": {"orders": all_n, "sum": num(all_sum)},
+            "period": {
+                "days": days,
+                "orders": period_orders,
+                "sum": num(sum((total for _n, total in per_day.values()), Decimal(0))),
+                "logins": sum(r["logins"] for r in daily),
+            },
+            "by_state": by_state,
+        },
+        "daily": daily,
+        "top_clients": top_clients,
     }

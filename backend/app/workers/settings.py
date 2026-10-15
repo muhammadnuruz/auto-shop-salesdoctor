@@ -1,18 +1,24 @@
 """arq worker: SD sync cron jobs plus a heartbeat."""
 
 import asyncio
+import contextlib
+import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any, ClassVar
 
 import httpx
 from arq.connections import RedisSettings
 from arq.cron import CronJob, cron
+from sqlalchemy import func, select
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
+from app.core.observability import init_sentry
 from app.db.session import create_engine, create_sessionmaker
 from app.integrations.salesdoctor import SalesDoctorClient, TokenStore
-from app.services import order_jobs
+from app.models import SyncRun
+from app.services import app_settings, notifier, order_jobs
 from app.services.jobs import ArqJobQueue, JobQueue
 from app.services.retention import purge_auth_data
 from app.sync.context import SyncContext
@@ -83,25 +89,67 @@ async def sweep_unknown_orders(ctx: dict[str, Any]) -> None:
     await order_jobs.sweep_unknown(ctx["sync"], _jobs(ctx))
 
 
-def _schedule(interval: int) -> dict[str, Any]:
-    """Map an interval in seconds to arq cron fields (intervals should divide the hour)."""
-    if interval < 60:
-        return {"second": set(range(0, 60, interval)), "microsecond": 0}
-    minutes = max(1, min(60, interval // 60))
-    if minutes >= 60:
-        return {"minute": {0}, "second": 0, "microsecond": 0}
-    return {"minute": set(range(0, 60, minutes)), "second": 0, "microsecond": 0}
+SYNC_JOBS: dict[str, Any] = {e: _sync_job(e) for e in app_settings.SYNC_ENTITIES}
+DISPATCH_EVERY = 10  # seconds; granularity of the DB-configurable sync intervals
 
 
-SYNC_INTERVALS = {
-    "stock": settings.SYNC_STOCK_INTERVAL,
-    "balances": settings.SYNC_BALANCES_INTERVAL,
-    "products": settings.SYNC_PRODUCTS_INTERVAL,
-    "prices": settings.SYNC_PRICES_INTERVAL,
-    "clients": settings.SYNC_CLIENTS_INTERVAL,
-    "references": settings.SYNC_REFERENCES_INTERVAL,
-}
-SYNC_JOBS: dict[str, Any] = {e: _sync_job(e) for e in SYNC_INTERVALS}
+async def dispatch_syncs(ctx: dict[str, Any]) -> list[str]:
+    """Enqueue each entity's sync once per interval slot.
+
+    Intervals come from ``app_setting`` (admin panel) with env defaults. Each slot is claimed
+    with a Redis ``SET NX`` key, so several workers never enqueue the same slot twice, and a
+    tick that runs late (busy worker) still runs the slot instead of skipping it. A sync run
+    that already started inside the current slot (e.g. the startup full sync) covers it. A
+    sync that is still running makes the next one return ``skipped`` (per-entity lock).
+    """
+    sync: SyncContext = ctx["sync"]
+    redis = ctx["redis"]
+    async with sync.sessionmaker() as db:
+        rt = await app_settings.load(db, sync.settings)
+        last_started: dict[str, datetime] = dict(
+            (
+                await db.execute(
+                    # failed runs do not cover a slot: the next tick retries
+                    select(SyncRun.entity, func.max(SyncRun.started_at))
+                    .where(SyncRun.status.in_(("ok", "running")))
+                    .group_by(SyncRun.entity)
+                )
+            ).all()
+        )
+    now = int(time.time())
+    queued: list[str] = []
+    for entity, interval in rt.sync_intervals.items():
+        slot = now // interval
+        key = f"sync:slot:{entity}:{interval}:{slot}"
+        try:
+            if not await redis.set(key, "1", nx=True, ex=interval + 60):
+                continue
+            last = last_started.get(entity)
+            if last is not None and last.timestamp() >= slot * interval:
+                continue  # already ran (or is running) in this slot
+            await redis.enqueue_job(f"sync_{entity}", _job_id=f"sync:{entity}:{interval}:{slot}")
+        except Exception as exc:  # free the slot so the next tick retries it
+            log.warning("sync_dispatch_failed", entity=entity, error=type(exc).__name__)
+            with contextlib.suppress(Exception):
+                await redis.delete(key)
+            continue
+        queued.append(entity)
+    return queued
+
+
+async def notify_tick(ctx: dict[str, Any]) -> None:
+    sync: SyncContext = ctx["sync"]
+    lock = ctx["redis"].lock("notify:lock", timeout=300)  # tick budget is 40 s
+    if not await lock.acquire(blocking=False):
+        return
+    try:
+        async with sync.sessionmaker() as db:
+            await notifier.tick(db, ctx["http"], sync.settings)
+    except Exception as exc:  # never kill the worker; next tick retries
+        log.warning("notify_tick_failed", error=type(exc).__name__)
+    finally:
+        with contextlib.suppress(Exception):
+            await lock.release()
 
 
 def _cron_jobs() -> list[CronJob]:
@@ -116,15 +164,20 @@ def _cron_jobs() -> list[CronJob]:
             cron(sync_order_statuses, minute=set(range(0, 60, 5)), second=15, microsecond=0)
         )
         jobs.append(cron(sync_old_open_orders, minute={20}, second=45, microsecond=0))
-        jobs += [cron(SYNC_JOBS[e], **_schedule(i)) for e, i in SYNC_INTERVALS.items()]
+        jobs.append(cron(dispatch_syncs, second=set(range(0, 60, DISPATCH_EVERY)), microsecond=0))
+    jobs.append(cron(notify_tick, second={5, 35}, microsecond=0))
     return jobs
 
 
 async def startup(ctx: dict[str, Any]) -> None:
     configure_logging(settings.LOG_LEVEL)
+    init_sentry(settings, "worker")
     http = httpx.AsyncClient(timeout=settings.SD_TIMEOUT)
     engine = create_engine(
         settings.DATABASE_URL,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+        hide_parameters=settings.ENV not in ("local", "test"),
         server_settings={
             "lock_timeout": "5000",
             "idle_in_transaction_session_timeout": "60000",
@@ -176,10 +229,13 @@ class WorkerSettings:
         sync_order_statuses,
         sync_old_open_orders,
         sweep_unknown_orders,
+        dispatch_syncs,
+        notify_tick,
         *SYNC_JOBS.values(),
     ]
     cron_jobs: ClassVar[list[CronJob]] = _cron_jobs()
     health_check_interval = 30
+    max_jobs = 20  # 6 syncs + reconcile/stock refresh + crons must not starve each other
     job_timeout = 900
     on_startup = startup
     on_shutdown = shutdown

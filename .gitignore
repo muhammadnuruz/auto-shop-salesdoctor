@@ -12,3 +12,5 @@ dist/
 .DS_Store
 *.egg-info/
 .admin-credentials
+test-results/
+playwright-report/

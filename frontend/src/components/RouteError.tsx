@@ -2,13 +2,16 @@ import Button from '@mui/material/Button';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { useTranslation } from 'react-i18next';
+import { useEffect } from 'react';
 import { useRouteError } from 'react-router-dom';
+import { reportError } from '@/lib/errorReporting';
 
 /** Router-level errorElement: lazy-chunk failures, loader errors, render crashes. */
 export function RouteError() {
   const { t } = useTranslation();
   const error = useRouteError();
   console.error('Route error', error);
+  useEffect(() => reportError(error, 'route'), [error]);
   return (
     <Stack
       role="alert"

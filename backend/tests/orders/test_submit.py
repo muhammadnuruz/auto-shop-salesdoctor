@@ -374,3 +374,48 @@ async def test_cancel_sd_unreachable_keeps_order_sent(world: World) -> None:
     r = await world.shop.post(f"{URL}/{o['public_id']}/cancel")
     assert r.status_code == 503
     assert (await world.shop.get(f"{URL}/{o['public_id']}")).json()["state"] == "sent"
+
+
+async def test_submit_writes_fresh_stock_only_for_its_own_products(world: World) -> None:
+    """Load test finding: upserting the whole warehouse inside the submit transaction (open
+    across the SD call) locked every sd_stock row and serialised concurrent submits."""
+    from app.models import SdStock
+
+    world.sd_server.stock[WH]["pa"] = 7  # SD differs for a product NOT in this order
+    world.sd_server.stock[WH]["pb"] = 4  # ... and for the ordered one (mirror says 5)
+    order = await world.draft([("pb", 0, 2)])
+    r = await world.submit(order)
+    assert r.status_code == 200, r.text
+
+    async def mirror(ref: str) -> float:
+        q = await world.session.scalar(
+            select(SdStock.quantity)
+            .where(SdStock.product_id == world.catalog[ref].id)
+            .execution_options(populate_existing=True)
+        )
+        return float(q or 0)
+
+    assert await mirror("pa") == 100  # untouched (refreshed later by the warehouse job)
+    assert await mirror("pb") == 4  # fresh value from SD written for the order's own line
+    assert REFRESH_WAREHOUSE_STOCK in world.jobs.names()
+
+
+async def test_stock_refresh_is_deduplicated_per_bucket(monkeypatch: Any) -> None:
+    from app.services import order_flow
+
+    seen: list[str | None] = []
+
+    class Jobs:
+        async def enqueue(
+            self, name: str, *args: Any, defer_by: Any = None, job_id: Any = None
+        ) -> bool:
+            seen.append(job_id)
+            return True
+
+    svc: Any = type("Svc", (), {"jobs": Jobs()})()
+    monkeypatch.setattr("time.time", lambda: 1_000_000.0)
+    await order_flow.enqueue_stock_refresh(svc, WH)
+    await order_flow.enqueue_stock_refresh(svc, WH)
+    monkeypatch.setattr("time.time", lambda: 1_000_000.0 + order_flow.REFRESH_BUCKET)
+    await order_flow.enqueue_stock_refresh(svc, WH)
+    assert seen[0] == seen[1] and seen[2] != seen[0] and str(seen[0]).startswith("stock-refresh:")

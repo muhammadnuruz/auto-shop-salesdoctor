@@ -3,6 +3,7 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import i18n from '@/i18n';
+import { reportError } from '@/lib/errorReporting';
 
 interface Props {
   children: ReactNode;
@@ -20,6 +21,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error('UI error', error, info.componentStack);
+    reportError(error, 'boundary');
   }
 
   render() {

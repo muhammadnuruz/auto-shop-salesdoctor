@@ -122,10 +122,22 @@ export const routes: RouteObject[] = [
             children: [
               {
                 path: 'audit',
-                lazy: named(
-                  () => import('@/features/admin/pages/Placeholder'),
-                  (m) => m.AuditPage,
-                ),
+                lazy: page(() => import('@/features/admin/pages/AuditPage')),
+              },
+            ],
+          },
+          {
+            element: <RequirePermission perm="reports.read" />,
+            children: [
+              { path: 'reports', lazy: page(() => import('@/features/admin/pages/ReportsPage')) },
+            ],
+          },
+          {
+            element: <RequirePermission perm="settings.write" />,
+            children: [
+              {
+                path: 'settings',
+                lazy: page(() => import('@/features/admin/pages/SettingsPage')),
               },
             ],
           },

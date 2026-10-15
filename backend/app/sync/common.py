@@ -145,6 +145,9 @@ async def bulk_upsert(
         groups.setdefault(frozenset(r), []).append(r)
 
     for items in groups.values():
+        # one global lock order (by conflict key) for every writer of a table: concurrent
+        # upserts (stock sync, submit, refresh job) can then never deadlock each other
+        items.sort(key=lambda r: tuple(r[c] for c in conflict))
         cols = list(items[0].keys())
         ucols = [c for c in cols if c not in conflict]
         if update_cols is not None:

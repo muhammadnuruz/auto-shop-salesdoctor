@@ -200,3 +200,21 @@ export const adminRefs = {
   territories: [{ id: '12', clients: 5 }],
   client_categories: [{ id: '3', clients: 9 }],
 };
+
+export const linkStats = (over: Record<string, unknown> = {}) => ({
+  login_count: 3,
+  max_logins: 10,
+  active_sessions: 1,
+  unique_clients: 2,
+  orders: {
+    all_time: { orders: 4, sum: 12000 },
+    period: { days: 30, orders: 2, sum: 5000, logins: 3 },
+    by_state: { sent: { orders: 2, sum: 5000 } },
+  },
+  daily: [
+    { date: '2026-10-13', logins: 1, orders: 0, sum: 0 },
+    { date: '2026-10-14', logins: 2, orders: 2, sum: 5000 },
+  ],
+  top_clients: [{ client_id: 7, name: 'Shop Seven', orders: 2, sum: 5000 }],
+  ...over,
+});

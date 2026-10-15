@@ -48,6 +48,9 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "postgresql+asyncpg://autoshop:autoshop@localhost:5432/autoshop"
     REDIS_URL: str = "redis://localhost:6379/0"
+    # per process; total = processes (WEB_CONCURRENCY api workers + 1 arq worker) x (size+overflow)
+    DB_POOL_SIZE: int = Field(10, ge=1, le=100)
+    DB_MAX_OVERFLOW: int = Field(10, ge=0, le=100)
 
     SD_BASE_URL: str = "https://example.salesdoc.io/api/v2/"
     SD_LOGIN: str = ""
@@ -121,6 +124,13 @@ class Settings(BaseSettings):
     ADMIN_USER_DELAY_THRESHOLD: int = Field(10, ge=1)
     ADMIN_USER_DELAY_BASE: float = Field(0.5, ge=0)
     ADMIN_USER_DELAY_MAX: float = Field(8.0, ge=0)
+
+    # --- observability ---
+    SENTRY_DSN: SecretStr | None = None  # error tracking off when unset
+    SENTRY_TRACES_SAMPLE_RATE: float = Field(0.0, ge=0, le=1)
+    APP_RELEASE: str = ""  # e.g. git sha, shown in Sentry
+    RL_CLIENT_ERRORS_PER_MIN: int = Field(20, ge=1)  # browser error reports per IP
+    RL_CLIENT_ERRORS_GLOBAL_PER_MIN: int = Field(300, ge=1)  # all clients together
 
     # retention (daily arq job)
     SESSION_PURGE_AFTER_DAYS: int = Field(7, ge=1)

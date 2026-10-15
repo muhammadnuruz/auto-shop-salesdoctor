@@ -1,5 +1,11 @@
 import { ApiError, rawRequest, request, setCsrfToken, type RawResponse } from './http';
 import type {
+  AppSettings,
+  AppSettingsUpdate,
+  AuditFacets,
+  AuditList,
+  ReportGroupBy,
+  SalesReport,
   AdminClient,
   AdminLink,
   AdminLoginResult,
@@ -110,7 +116,8 @@ export const linksApi = {
   unarchive: (id: number) => request<AdminLink>(`${A}/links/${id}/unarchive`, { method: 'POST' }),
   clone: (id: number, name?: string) =>
     request<AdminLink>(`${A}/links/${id}/clone`, { method: 'POST', body: { name: name ?? null } }),
-  stats: (id: number) => request<LinkStats>(`${A}/links/${id}/stats`),
+  stats: (id: number, days = 30) =>
+    request<LinkStats>(`${A}/links/${id}/stats`, { query: { days } }),
   clients: (id: number, p: Page) =>
     request<Paged<LinkClient>>(`${A}/links/${id}/clients`, { query: p }),
   changeClients: (id: number, body: { add: number[]; remove: number[] }) =>
@@ -269,5 +276,54 @@ export const productsApi = {
     request<AdminProduct>(`${A}/products/${encodeURIComponent(sdId)}/barcodes`, {
       method: 'DELETE',
       body: { barcode },
+    }),
+};
+
+// ---- audit ----
+export interface AuditFilters {
+  actor_type?: 'admin' | 'shop' | 'system' | null;
+  actor_id?: number | null;
+  action?: string | null;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  /** ISO instants (aware) */
+  date_from?: string | null;
+  date_to?: string | null;
+}
+
+export const auditApi = {
+  list: (f: AuditFilters & Page) => request<AuditList>(`${A}/audit`, { query: { ...f } }),
+  facets: () => request<AuditFacets>(`${A}/audit/facets`),
+};
+
+// ---- reports ----
+export interface ReportParams {
+  group_by: ReportGroupBy;
+  /** YYYY-MM-DD, inclusive, dealer time zone */
+  date_from: string;
+  date_to: string;
+  link_id?: number | null;
+}
+
+export const reportsApi = {
+  sales: (p: ReportParams) => request<SalesReport>(`${A}/reports/sales`, { query: { ...p } }),
+  async salesXlsx(p: ReportParams): Promise<Blob> {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(p)) if (v != null && v !== '') params.set(k, String(v));
+    const url = `${A}/reports/sales.xlsx?${params.toString()}`;
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) throw new ApiError(res.status, `HTTP ${res.status}`, url);
+    return res.blob();
+  },
+};
+
+// ---- runtime settings ----
+export const settingsApi = {
+  get: () => request<AppSettings>(`${A}/settings`),
+  update: (body: AppSettingsUpdate) =>
+    request<AppSettings>(`${A}/settings`, { method: 'PUT', body }),
+  telegramTest: () =>
+    request<{ ok: boolean; results: Record<string, string> }>(`${A}/settings/telegram/test`, {
+      method: 'POST',
     }),
 };

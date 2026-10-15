@@ -1,9 +1,11 @@
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
+import AssessmentIcon from '@mui/icons-material/Assessment';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
 import InventoryIcon from '@mui/icons-material/Inventory2';
 import LinkIcon from '@mui/icons-material/Link';
 import PersonIcon from '@mui/icons-material/Person';
+import SettingsIcon from '@mui/icons-material/Settings';
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import StorefrontIcon from '@mui/icons-material/Storefront';
 import SyncIcon from '@mui/icons-material/Sync';
@@ -24,6 +26,7 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/admin/links', labelKey: 'nav.links', icon: LinkIcon, perm: 'links.read' },
   { to: '/admin/clients', labelKey: 'nav.clients', icon: StorefrontIcon, perm: 'clients.read' },
   { to: '/admin/products', labelKey: 'nav.products', icon: InventoryIcon, perm: 'products.read' },
+  { to: '/admin/reports', labelKey: 'nav.reports', icon: AssessmentIcon, perm: 'reports.read' },
   { to: '/admin/sync', labelKey: 'nav.sync', icon: SyncIcon, perm: 'sync.read' },
   {
     to: '/admin/users',
@@ -32,5 +35,11 @@ export const NAV_ITEMS: NavItem[] = [
     perm: 'admins.manage',
   },
   { to: '/admin/audit', labelKey: 'nav.audit', icon: FactCheckIcon, perm: 'audit.read' },
+  {
+    to: '/admin/settings',
+    labelKey: 'nav.settings',
+    icon: SettingsIcon,
+    perm: 'settings.write',
+  },
   { to: '/admin/profile', labelKey: 'nav.profile', icon: PersonIcon },
 ];

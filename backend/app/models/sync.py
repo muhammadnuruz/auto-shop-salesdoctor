@@ -28,4 +28,7 @@ class SyncRun(Base):
         Index("ix_sync_run_entity_started_at", "entity", text("started_at DESC")),
         Index("ix_sync_run_started_at", text("started_at DESC")),
         Index("ix_sync_run_running", "started_at", postgresql_where=text("status = 'running'")),
+        # notifier: finished runs after a (finished_at, id) cursor; previous run per entity
+        Index("ix_sync_run_finished_at_id", "finished_at", "id"),
+        Index("ix_sync_run_entity_finished_at", "entity", "finished_at"),
     )

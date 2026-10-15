@@ -10,14 +10,23 @@ from sqlalchemy.ext.asyncio import (
 
 
 def create_engine(
-    database_url: str, *, server_settings: dict[str, str] | None = None
+    database_url: str,
+    *,
+    server_settings: dict[str, str] | None = None,
+    pool_size: int = 10,
+    max_overflow: int = 10,
+    hide_parameters: bool = False,
 ) -> AsyncEngine:
+    """Per-process pool. Total connections = processes x (pool_size + max_overflow): keep it
+    below Postgres ``max_connections`` (100 by default) when running several API workers."""
     connect_args = {"server_settings": server_settings} if server_settings else {}
     return create_async_engine(
         database_url,
         pool_pre_ping=True,
-        pool_size=10,
-        max_overflow=10,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        # production: keep SQL parameter values (phones, tokens) out of exception messages
+        hide_parameters=hide_parameters,
         connect_args=connect_args,
     )
 

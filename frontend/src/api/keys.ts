@@ -23,7 +23,7 @@ export const qk = {
       all: () => ['admin', 'links'] as const,
       list: (p: object) => ['admin', 'links', 'list', p] as const,
       detail: (id: number) => ['admin', 'links', 'detail', id] as const,
-      stats: (id: number) => ['admin', 'links', 'stats', id] as const,
+      stats: (id: number, days = 30) => ['admin', 'links', 'stats', id, days] as const,
       clients: (id: number, p: object) => ['admin', 'links', 'clients', id, p] as const,
     },
     clients: {
@@ -35,6 +35,13 @@ export const qk = {
       list: (p: object) => ['admin', 'phones', 'list', p] as const,
     },
     refs: () => ['admin', 'refs'] as const,
+    audit: {
+      all: () => ['admin', 'audit'] as const,
+      list: (p: object) => ['admin', 'audit', 'list', p] as const,
+      facets: () => ['admin', 'audit', 'facets'] as const,
+    },
+    reports: (p: object) => ['admin', 'reports', p] as const,
+    settings: () => ['admin', 'settings'] as const,
     dashboard: () => ['admin', 'dashboard'] as const,
     orders: {
       all: () => ['admin', 'orders'] as const,

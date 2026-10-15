@@ -216,4 +216,5 @@ class AuditLog(Base):
         Index("ix_audit_log_at", text("at DESC")),
         Index("ix_audit_log_entity", "entity_type", "entity_id"),
         Index("ix_audit_log_actor", "actor_type", "actor_id"),
+        Index("ix_audit_log_action", "action"),  # filter + distinct for the audit browser
     )

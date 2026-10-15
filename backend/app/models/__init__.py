@@ -26,12 +26,14 @@ from app.models.sd import (
     SdUnit,
     SdWarehouse,
 )
+from app.models.settings import AppSetting
 from app.models.sync import SyncRun
 
 __all__ = [
     "AccessLink",
     "AdminSession",
     "AdminUser",
+    "AppSetting",
     "AuditLog",
     "ClientPhone",
     "ClientSetting",

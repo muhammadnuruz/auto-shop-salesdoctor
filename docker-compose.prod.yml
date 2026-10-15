@@ -1,0 +1,124 @@
+# Production overlay. Usage (on the server, with .env from .env.prod.example):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile web up -d --build
+#   ./deploy/init-letsencrypt.sh            # first time only: obtain the TLS certificate
+#
+# What it changes vs. the dev compose: ENV=production (strict config validation: strong
+# secrets, https origins, Secure cookies), several API processes, no host ports except
+# 80/443 on the TLS proxy, healthchecks that restart a stuck container, log rotation, daily
+# Postgres backups with a restore test, and Let's Encrypt certificates.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "10"
+
+x-prod-env: &prod-env
+  ENV: production
+  WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+  DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
+  COOKIE_SECURE: "true"
+
+services:
+  migrate:
+    environment: *prod-env
+    logging: *logging
+
+  api:
+    environment: *prod-env
+    ports: !reset []
+    logging: *logging
+    healthcheck:
+      # liveness only (/health: the process answers). Readiness (/health/ready: DB + Redis)
+      # must NOT trigger restarts: a DB restart would otherwise kill in-flight SD calls
+      test: ["CMD", "python", "-m", "app.healthcheck", "http", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    environment: *prod-env
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck", "arq", "--timeout", "15"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 60s
+
+  db:
+    logging: *logging
+    command: ["postgres", "-c", "max_connections=100", "-c", "shared_buffers=256MB"]
+
+  redis:
+    logging: *logging
+
+  # SPA + /api reverse proxy + TLS termination (Let's Encrypt)
+  web:
+    profiles: ["web"]
+    build:
+      context: ./frontend
+      args:
+        VITE_APP_RELEASE: ${APP_RELEASE:-}
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    ports: !override
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/prod.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./deploy/nginx/security-headers.conf:/etc/nginx/snippets/security-headers.conf:ro
+      - certbot-conf:/etc/letsencrypt:ro
+      - certbot-www:/var/www/certbot:ro
+    # reload every 6 h so renewed certificates are picked up
+    command: ["/bin/sh", "-c", "while :; do sleep 6h; nginx -s reload; done & exec /docker-entrypoint.sh nginx -g 'daemon off;'"]
+    logging: *logging
+
+  certbot:
+    profiles: ["web"]
+    image: certbot/certbot:v3.0.1
+    volumes:
+      - certbot-conf:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"]
+    restart: unless-stopped
+    logging: *logging
+
+  backup:
+    image: postgres:16-alpine
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER:-autoshop}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:-autoshop}
+      BACKUP_HOUR: ${BACKUP_HOUR:-2}            # local time of the dump (TZ below)
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      TZ: Asia/Tashkent
+    volumes:
+      - ./deploy/backup:/scripts:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    entrypoint: ["/bin/sh", "/scripts/backup-loop.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:  # unhealthy when the newest good dump is older than 26 h
+      test: ["CMD", "/bin/sh", "/scripts/check-fresh.sh"]
+      interval: 30m
+      timeout: 10s
+      retries: 1
+      start_period: 26h
+    restart: unless-stopped
+    logging: *logging
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24  # TRUSTED_PROXIES=172.30.0.0/24 (only nginx sets X-Forwarded-For)
+
+volumes:
+  certbot-conf:
+  certbot-www:

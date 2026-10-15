@@ -43,3 +43,17 @@ make fmt
 - `.env`: `APP_SECRET_KEY` (production'da majburiy, >= 32 belgi), `ALLOWED_ORIGINS`, `TRUSTED_PROXIES`
   (`X-Forwarded-For` faqat shu proksilardan ishoniladi), ixtiyoriy `TOTP_ENC_KEY`, `RL_*` limitlar.
 - Birinchi superadmin: `make superadmin u=admin` (parol so'raladi) yoki `ADMIN_PASSWORD=... make superadmin u=admin`.
+
+## Hujjatlar / Docs
+- `HANDOFF.md` — holat, qarorlar, qolgan ishlar (start here)
+- `docs/DEPLOY.md` — production (TLS, backup, monitoring, CI)
+- `docs/LOAD_TEST.md` — yuklama testi natijalari
+- `docs/operator-manual-uz.md` — admin panel bo'yicha operator qo'llanmasi (o'zbekcha)
+- `docs/shop-guide.md` — do'konlar uchun qisqa eslatma (RU/UZ)
+
+## E2E / yuklama testi
+```bash
+make e2e              # docker stek + soxta SD + Playwright (frontend/e2e)
+make e2e-seed LOAD=1 && make load   # 50 do'kon, realistik profil
+make e2e-down
+```

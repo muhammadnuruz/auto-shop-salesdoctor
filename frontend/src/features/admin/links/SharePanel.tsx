@@ -94,7 +94,7 @@ export function SharePanel({ link, warnings }: { link: AdminLink; warnings?: str
                     : String(stats.data.login_count),
                 ],
                 [t('links.statActiveSessions'), String(stats.data.active_sessions)],
-                [t('links.statOrders'), dash(stats.data.orders)],
+                [t('links.statOrders'), dash(stats.data.orders?.all_time.orders)],
               ].map(([label, value]) => (
                 <Paper key={label} variant="outlined" sx={{ p: 1, textAlign: 'center' }}>
                   <Typography variant="h3" component="div">

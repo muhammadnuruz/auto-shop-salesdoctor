@@ -7,6 +7,7 @@ import { RouterProvider } from 'react-router-dom';
 import { setCsrfRefresher } from '@/api/http';
 import { authApi } from '@/api/admin';
 import { shopApi } from '@/api/shop';
+import { installGlobalErrorReporting } from '@/lib/errorReporting';
 import { createQueryClient } from '@/lib/queryClient';
 import { Providers } from './Providers';
 import { createAppRouter } from './router';
@@ -17,6 +18,8 @@ setCsrfRefresher(async (realm) => {
   if (realm === 'admin') await authApi.me();
   else await shopApi.me();
 });
+
+installGlobalErrorReporting();
 
 const queryClient = createQueryClient();
 const router = createAppRouter();
