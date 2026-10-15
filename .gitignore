@@ -14,3 +14,4 @@ dist/
 .admin-credentials
 test-results/
 playwright-report/
+backups/

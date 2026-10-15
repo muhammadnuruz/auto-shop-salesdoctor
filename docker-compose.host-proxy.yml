@@ -1,0 +1,21 @@
+# Overlay for a shared server where a host-level nginx already owns ports 80/443 and
+# terminates TLS (host certbot). Use together with the prod overlay:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#     -f docker-compose.host-proxy.yml --profile web up -d --build
+#
+# The web container listens on 127.0.0.1:${WEB_HOST_PORT:-8095} (plain HTTP); the host
+# nginx proxies https://${DOMAIN} to it (deploy/nginx/host-site.conf.example).
+
+services:
+  web:
+    ports: !override
+      - "127.0.0.1:${WEB_HOST_PORT:-8095}:80"
+    volumes: !override
+      - ./deploy/nginx/behind-host-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./deploy/nginx/security-headers.conf:/etc/nginx/snippets/security-headers.conf:ro
+    command: !reset null
+
+  # certificates are managed by the host certbot
+  certbot:
+    profiles: !override ["container-tls"]

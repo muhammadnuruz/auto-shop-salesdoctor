@@ -95,3 +95,24 @@ $DC up -d
 - **Docker:** builds both images and renders the prod compose.
 - **E2E:** Playwright against the docker stack with the fake Sales Doctor, plus a short load
   test.
+
+## 9. Shared server with an existing host nginx
+
+When ports 80/443 already belong to a host-level nginx (other sites on the same server),
+do not start the container TLS proxy. Add the `docker-compose.host-proxy.yml` overlay: the
+`web` container then serves plain HTTP on `127.0.0.1:${WEB_HOST_PORT:-8095}` and the
+container `certbot` is disabled. The host nginx terminates TLS with the host certbot.
+
+```bash
+DC="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-proxy.yml --profile web"
+$DC up -d --build
+sed 's/DOMAIN/<your domain>/' deploy/nginx/host-site.conf.example > /etc/nginx/sites-available/auto-shop
+ln -s /etc/nginx/sites-available/auto-shop /etc/nginx/sites-enabled/ && nginx -t && nginx -s reload
+certbot --nginx -d <your domain> --redirect
+```
+
+The host site passes the client address in `X-Real-IP`; the container nginx forwards it as
+`X-Forwarded-For` (overwritten, never appended), which the API trusts from `TRUSTED_PROXIES`.
+Always pass the same `-f` set (and run tests under another project name, e.g.
+`docker compose -p autoshop-test --profile test run --rm test pytest`): running the dev
+compose under the production project name recreates the network and stops `db`.
