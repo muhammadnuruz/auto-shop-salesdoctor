@@ -1,9 +1,10 @@
 """Admin products API: browse mirror (stock/prices), hide from the shop, extra barcodes."""
 
-from typing import Annotated, Any
+import io
+from typing import Annotated, Any, Self
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AdminContext, DbDep, MetaDep, require
 from app.api.schemas import Number
+from app.core.xlsx import cell
 from app.models import (
     ProductBarcode,
     ProductSetting,
@@ -37,13 +39,30 @@ class ProductPatch(BaseModel):
 
 
 BULK_MAX = 10_000
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+SdIds = Annotated[
+    list[Annotated[str, Field(min_length=1, max_length=64)]],
+    Field(min_length=1, max_length=BULK_MAX),
+]
 
 
-class BulkHiddenIn(BaseModel):
-    sd_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
-        min_length=1, max_length=BULK_MAX
-    )
-    hidden: bool
+class BulkIn(BaseModel):
+    """Bulk update; only the fields sent are changed (``note: null`` clears the note)."""
+
+    sd_ids: SdIds
+    hidden: bool | None = None
+    note: str | None = Field(None, max_length=1000)
+
+    @model_validator(mode="after")
+    def _something(self) -> Self:
+        if self.hidden is None and "note" not in self.model_fields_set:
+            raise ValueError("send hidden and/or note")
+        return self
+
+
+class ExportIn(BaseModel):
+    sd_ids: SdIds
 
 
 class BulkHiddenOut(BaseModel):
@@ -305,18 +324,21 @@ async def list_product_ids(
 
 
 @router.post("/bulk", response_model=BulkHiddenOut)
-async def bulk_hidden(
-    body: BulkHiddenIn, ctx: WriteDep, db: DbDep, meta: MetaDep
-) -> dict[str, Any]:
-    """Hide or show many products in the shop catalog at once (one audit entry)."""
+async def bulk_update(body: BulkIn, ctx: WriteDep, db: DbDep, meta: MetaDep) -> dict[str, Any]:
+    """Hide/show and/or set the note of many products at once (one upsert, one audit entry)."""
     wanted = list(dict.fromkeys(body.sd_ids))
     found = (
         await db.execute(select(SdProduct.id, SdProduct.sd_id).where(SdProduct.sd_id.in_(wanted)))
     ).all()
+    changes: dict[str, Any] = {}
+    if body.hidden is not None:
+        changes["hidden"] = body.hidden
+    if "note" in body.model_fields_set:
+        changes["note"] = (body.note or "").strip() or None
     if found:
         stmt = pg_insert(ProductSetting).values(
             [
-                {"product_id": pid, "hidden": body.hidden, "updated_by": ctx.user.id}
+                {"product_id": pid, "hidden": False, "updated_by": ctx.user.id, **changes}
                 for pid, _ in found
             ]
         )
@@ -324,7 +346,7 @@ async def bulk_hidden(
             stmt.on_conflict_do_update(
                 index_elements=[ProductSetting.product_id],
                 set_={
-                    "hidden": stmt.excluded.hidden,
+                    **{k: getattr(stmt.excluded, k) for k in changes},
                     "updated_by": stmt.excluded.updated_by,
                     "updated_at": func.now(),
                 },
@@ -337,15 +359,78 @@ async def bulk_hidden(
         action="product.bulk_update",
         entity_type="product",
         entity_id="bulk",
-        after={
-            "hidden": body.hidden,
-            "count": len(found),
-            "sd_ids": [sd for _, sd in found][:200],
-        },
+        after={**changes, "count": len(found), "sd_ids": [sd for _, sd in found][:200]},
         meta=meta,
     )
     await db.commit()
     return {"updated": len(found), "not_found": len(wanted) - len(found)}
+
+
+@router.post("/export.xlsx")
+async def export_products(body: ExportIn, ctx: ReadDep, db: DbDep, meta: MetaDep) -> Response:
+    """The selected products as a workbook: one column per warehouse stock and sale price type."""
+    from openpyxl import Workbook
+
+    rows = (
+        await db.execute(
+            _select()
+            .where(SdProduct.sd_id.in_(list(dict.fromkeys(body.sd_ids))))
+            .order_by(SdProduct.name, SdProduct.id)
+        )
+    ).all()
+    items = await _items(db, list(rows))
+    warehouses = sorted({(s["warehouse"], s["name"]) for i in items for s in i["stock"]})
+    price_types = sorted({(p["price_type"], p["name"]) for i in items for p in i["prices"]})
+
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("products")
+    ws.append(
+        [
+            "SD id", "Code", "Name", "Category", "Active", "Hidden", "Note", "Pack qty",
+            "Barcodes", "Stock total",
+            *(f"Stock: {name or sd}" for sd, name in warehouses),
+            *(f"Price: {name or sd}" for sd, name in price_types),
+        ]
+    )  # fmt: skip
+    for it in items:
+        stock = {s["warehouse"]: s["quantity"] for s in it["stock"]}
+        prices = {p["price_type"]: p["price"] for p in it["prices"]}
+        ws.append(
+            [
+                cell(it["sd_id"]),
+                cell(it["code"]),
+                cell(it["name"]),
+                cell(it["category_name"]),
+                "yes" if it["active"] else "no",
+                "yes" if it["hidden"] else "no",
+                cell(it["note"]),
+                it["pack_quantity"],
+                cell(", ".join(b["barcode"] for b in it["barcodes"])),
+                sum(stock.values()),
+                *(stock.get(sd) for sd, _ in warehouses),
+                *(prices.get(sd) for sd, _ in price_types),
+            ]
+        )
+    buf = io.BytesIO()
+    wb.save(buf)
+    audit.record(
+        db,
+        actor_type="admin",
+        actor_id=ctx.user.id,
+        action="product.export",
+        entity_type="product",
+        after={"rows": len(items)},
+        meta=meta,
+    )
+    await db.commit()
+    return Response(
+        buf.getvalue(),
+        media_type=XLSX,
+        headers={
+            "Content-Disposition": 'attachment; filename="products.xlsx"',
+            "X-Rows": str(len(items)),
+        },
+    )
 
 
 async def _product(db: AsyncSession, sd_id: str) -> SdProduct:

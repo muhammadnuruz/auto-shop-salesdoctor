@@ -116,12 +116,58 @@ async def test_bulk_hide_and_show(world: World) -> None:
     assert actions_count(await actions(world), "product.bulk_update") == 2
 
 
+async def by_id(w: World) -> dict[str, Any]:
+    return {i["sd_id"]: i for i in (await w.admin.get(P, params={"limit": 200})).json()["items"]}
+
+
+async def test_bulk_note_set_and_clear_keeps_hidden(world: World) -> None:
+    await world.admin.post(f"{P}/bulk", {"sd_ids": ["pa"], "hidden": True})
+    r = await world.admin.post(f"{P}/bulk", {"sd_ids": ["pa", "pb"], "note": "  sale  "})
+    assert r.json() == {"updated": 2, "not_found": 0}
+    items = await by_id(world)
+    assert items["pa"]["note"] == "sale" and items["pa"]["hidden"] is True  # hidden untouched
+    assert items["pb"]["note"] == "sale" and items["pb"]["hidden"] is False
+    await world.admin.post(f"{P}/bulk", {"sd_ids": ["pa", "pb"], "note": None})
+    items = await by_id(world)
+    assert items["pa"]["note"] is None and items["pb"]["note"] is None
+    assert items["pa"]["hidden"] is True
+
+
+async def test_export_selected_products_xlsx(world: World) -> None:
+    import io
+
+    from openpyxl import load_workbook
+
+    await world.admin.patch(f"{P}/pa", {"note": "=cmd"})
+    r = await world.admin.post(f"{P}/export.xlsx", {"sd_ids": ["pb", "pa", "ghost"]})
+    assert r.status_code == 200 and r.headers["x-rows"] == "2"
+    assert r.headers["content-type"].startswith("application/vnd.openxmlformats")
+    ws = load_workbook(io.BytesIO(r.content)).active
+    assert ws is not None
+    rows = [list(row) for row in ws.iter_rows(values_only=True)]
+    head = rows[0]
+    assert head[:10] == [
+        "SD id", "Code", "Name", "Category", "Active", "Hidden", "Note", "Pack qty",
+        "Barcodes", "Stock total",
+    ]  # fmt: skip
+    assert "Stock: Основной склад" in head
+    assert not any(str(h).startswith("Price:") and "d0_7" in str(h) for h in head)
+    pa = next(row for row in rows[1:] if row[0] == "pa")
+    assert pa[2] == "Cream Alpha" and pa[6] == "'=cmd"  # formula neutralised
+    assert set(str(pa[8]).split(", ")) == {"4780000000011", "4780000000100"}
+    assert pa[9] == 100 and pa[head.index("Stock: Основной склад")] == 100
+    assert "product.export" in await actions(world)
+
+
 async def test_bulk_validation_and_rbac(world: World, app_factory: ApiFactory) -> None:
     assert (await world.admin.post(f"{P}/bulk", {"sd_ids": [], "hidden": True})).status_code == 422
     assert (await world.admin.post(f"{P}/bulk", {"sd_ids": ["pa"]})).status_code == 422
+    long_note = {"sd_ids": ["pa"], "note": "x" * 1001}
+    assert (await world.admin.post(f"{P}/bulk", long_note)).status_code == 422
     v = await viewer(world, app_factory)
     assert (await v.get(f"{P}/ids")).status_code == 200
     assert (await v.post(f"{P}/bulk", {"sd_ids": ["pa"], "hidden": True})).status_code == 403
+    assert (await v.post(f"{P}/export.xlsx", {"sd_ids": ["pa"]})).status_code == 200
 
 
 # ----------------------------------------------------------------------------- barcodes
