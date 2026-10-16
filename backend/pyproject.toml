@@ -22,6 +22,7 @@ dependencies = [
   "itsdangerous>=2.2",
   "python-multipart>=0.0.9",
   "openpyxl>=3.1",
+  "reportlab>=4.2",
   "sentry-sdk>=2.18",
 ]
 
@@ -33,6 +34,7 @@ dev = [
   "ruff>=0.5",
   "mypy>=1.10",
   "fakeredis[lua]>=2.23",
+  "types-reportlab>=4.2",
 ]
 
 [tool.setuptools.packages.find]
@@ -57,6 +59,7 @@ known-third-party = ["alembic"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106", "S107", "RUF001"]  # RUF001: real Cyrillic SD names
+"app/services/invoice_pdf.py" = ["RUF001"]  # Russian waybill labels
 
 [tool.mypy]
 python_version = "3.12"
