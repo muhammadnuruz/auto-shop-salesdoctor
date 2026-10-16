@@ -243,9 +243,10 @@ describe('admin products', () => {
     expect(await screen.findByText('Выбрано: 5')).toBeInTheDocument();
     expect(idsQuery).not.toBeNull();
 
-    await user.click(screen.getByRole('button', { name: 'Скрыть из магазина' }));
+    await user.click(screen.getByRole('button', { name: 'Удалить из магазина' }));
     const dialog = await screen.findByRole('dialog');
-    expect(dialog).toHaveTextContent('Скрыть 5 товаров из каталога магазинов?');
+    expect(dialog).toHaveTextContent('Удалить 5 товаров из каталога магазинов?');
+    expect(dialog).toHaveTextContent('В Sales Doctor товары не меняются');
     await user.click(within(dialog).getByRole('button', { name: 'Подтвердить' }));
     await waitFor(() =>
       expect(bulks).toEqual([{ sd_ids: ['p1', 'p2', 'p3', 'p4', 'p5'], hidden: true }]),
@@ -266,7 +267,50 @@ describe('admin products', () => {
     expect(within(cards).getAllByRole('listitem')).toHaveLength(1);
     await user.click(within(cards).getByRole('checkbox', { name: 'Выбрать: Oil filter' }));
     expect(screen.getByText('Выбрано: 1')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Скрыть из магазина' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Удалить из магазина' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Заметка' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Excel' })).toBeInTheDocument(); // read is enough
     localStorage.removeItem('admin-products-view');
+  });
+
+  it('bulk note (set and clear) and Excel export of the selection', async () => {
+    setup();
+    const bulks: unknown[] = [];
+    const exports: unknown[] = [];
+    server.use(
+      http.post('*/api/admin/products/bulk', async ({ request }) => {
+        bulks.push(await request.json());
+        return HttpResponse.json({ updated: 1, not_found: 0 });
+      }),
+      http.post('*/api/admin/products/export.xlsx', async ({ request }) => {
+        exports.push(await request.json());
+        return new HttpResponse(new Uint8Array([80, 75]), {
+          headers: {
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          },
+        });
+      }),
+    );
+    URL.createObjectURL = () => 'blob:x';
+    URL.revokeObjectURL = () => undefined;
+    renderApp('/admin/products');
+    await screen.findByText('Oil filter');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('checkbox', { name: 'Выбрать: Oil filter' }));
+
+    await user.click(screen.getByRole('button', { name: 'Excel' }));
+    await waitFor(() => expect(exports).toEqual([{ sd_ids: ['p1'] }]));
+
+    await user.click(screen.getByRole('button', { name: 'Заметка' }));
+    let dialog = await screen.findByRole('dialog', { name: 'Заметка для 1 товаров' });
+    await user.type(within(dialog).getByLabelText('Заметка'), '  promo  ');
+    await user.click(within(dialog).getByRole('button', { name: 'Сохранить' }));
+    await waitFor(() => expect(bulks).toEqual([{ sd_ids: ['p1'], note: 'promo' }]));
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Выбрать: Oil filter' }));
+    await user.click(screen.getByRole('button', { name: 'Заметка' }));
+    dialog = await screen.findByRole('dialog', { name: 'Заметка для 1 товаров' });
+    await user.click(within(dialog).getByRole('button', { name: 'Сохранить' }));
+    await waitFor(() => expect(bulks).toContainEqual({ sd_ids: ['p1'], note: null }));
   });
 });

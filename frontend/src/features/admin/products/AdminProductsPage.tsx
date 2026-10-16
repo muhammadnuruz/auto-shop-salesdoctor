@@ -1,6 +1,8 @@
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import DownloadIcon from '@mui/icons-material/Download';
+import NoteAltOutlinedIcon from '@mui/icons-material/NoteAltOutlined';
 import SearchIcon from '@mui/icons-material/Search';
 import VisibilityIcon from '@mui/icons-material/Visibility';
-import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -11,6 +13,7 @@ import Chip from '@mui/material/Chip';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
+import DialogTitle from '@mui/material/DialogTitle';
 import InputAdornment from '@mui/material/InputAdornment';
 import MenuItem from '@mui/material/MenuItem';
 import Paper from '@mui/material/Paper';
@@ -38,6 +41,7 @@ import { ProductThumb } from '@/features/orders/ProductThumb';
 import { useDebounced } from '@/hooks/useDebounced';
 import { usePaging } from '@/hooks/usePaging';
 import { useViewMode } from '@/hooks/useViewMode';
+import { saveBlob } from '@/lib/download';
 import { formatAmount } from '@/lib/format';
 import { useCan } from '../AdminContext';
 import { useRefs } from '../queries';
@@ -106,7 +110,8 @@ export default function AdminProductsPage() {
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   /** the selection came from "select all matching the filter" */
   const [allMatching, setAllMatching] = useState(false);
-  const [confirm, setConfirm] = useState<boolean | null>(null); // the `hidden` value to apply
+  const [dialog, setDialog] = useState<'hide' | 'show' | 'note' | null>(null);
+  const [noteText, setNoteText] = useState('');
   const q = useDebounced(search.trim());
 
   const filters = {
@@ -169,14 +174,23 @@ export default function AdminProductsPage() {
     },
   });
   const bulk = useMutation({
-    mutationFn: (hide: boolean) => productsApi.bulkHidden([...picked], hide),
+    mutationFn: (patch: { hidden?: boolean; note?: string | null }) =>
+      productsApi.bulk([...picked], patch),
     onSuccess: (r) => {
       enqueueSnackbar(t('prod.bulkDone', { count: r.updated }), { variant: 'success' });
       clearSelection();
       void qc.invalidateQueries({ queryKey: qk.admin.products.all() });
     },
-    onSettled: () => setConfirm(null),
+    onSettled: () => setDialog(null),
   });
+  const exportXlsx = useMutation({
+    mutationFn: () => productsApi.exportXlsx([...picked]),
+    onSuccess: (blob) => saveBlob(blob, 'products.xlsx'),
+  });
+  const applyDialog = () => {
+    if (dialog === 'hide' || dialog === 'show') bulk.mutate({ hidden: dialog === 'hide' });
+    else if (dialog === 'note') bulk.mutate({ note: noteText.trim() || null });
+  };
 
   const pageCheckbox = (
     <Checkbox
@@ -273,8 +287,9 @@ export default function AdminProductsPage() {
                   <Button
                     size="small"
                     variant="outlined"
-                    startIcon={<VisibilityOffIcon />}
-                    onClick={() => setConfirm(true)}
+                    color="error"
+                    startIcon={<DeleteOutlineIcon />}
+                    onClick={() => setDialog('hide')}
                   >
                     {t('prod.bulkHide')}
                   </Button>
@@ -282,12 +297,32 @@ export default function AdminProductsPage() {
                     size="small"
                     variant="outlined"
                     startIcon={<VisibilityIcon />}
-                    onClick={() => setConfirm(false)}
+                    onClick={() => setDialog('show')}
                   >
                     {t('prod.bulkShow')}
                   </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<NoteAltOutlinedIcon />}
+                    onClick={() => {
+                      setNoteText('');
+                      setDialog('note');
+                    }}
+                  >
+                    {t('prod.bulkNote')}
+                  </Button>
                 </>
               )}
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<DownloadIcon />}
+                disabled={exportXlsx.isPending}
+                onClick={() => exportXlsx.mutate()}
+              >
+                {t('prod.bulkExport')}
+              </Button>
               <Button size="small" onClick={clearSelection}>
                 {t('prod.clearSelection')}
               </Button>
@@ -484,22 +519,41 @@ export default function AdminProductsPage() {
         onClose={() => setSelected(null)}
         onChange={setSelected}
       />
-      <Dialog open={confirm !== null} onClose={() => setConfirm(null)} maxWidth="xs" fullWidth>
+      <Dialog open={dialog !== null} onClose={() => setDialog(null)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontSize: '1.05rem' }}>
+          {dialog === 'hide' && t('prod.bulkConfirmHide', { count: picked.size })}
+          {dialog === 'show' && t('prod.bulkConfirmShow', { count: picked.size })}
+          {dialog === 'note' && t('prod.bulkNoteTitle', { count: picked.size })}
+        </DialogTitle>
         <DialogContent>
-          <Typography>
-            {t(confirm ? 'prod.bulkConfirmHide' : 'prod.bulkConfirmShow', {
-              count: picked.size,
-            })}
-          </Typography>
+          {dialog === 'hide' && (
+            <Typography variant="body2" color="text.secondary">
+              {t('prod.bulkConfirmHideHint')}
+            </Typography>
+          )}
+          {dialog === 'note' && (
+            <TextField
+              autoFocus
+              multiline
+              minRows={2}
+              label={t('prod.note')}
+              value={noteText}
+              onChange={(e) => setNoteText(e.target.value)}
+              helperText={t('prod.bulkNoteHint')}
+              slotProps={{ htmlInput: { maxLength: 1000 } }}
+              sx={{ mt: 1 }}
+            />
+          )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setConfirm(null)}>{t('common.cancel')}</Button>
+          <Button onClick={() => setDialog(null)}>{t('common.cancel')}</Button>
           <Button
             variant="contained"
+            color={dialog === 'hide' ? 'error' : 'primary'}
             disabled={bulk.isPending}
-            onClick={() => confirm !== null && bulk.mutate(confirm)}
+            onClick={applyDialog}
           >
-            {t('common.confirm')}
+            {dialog === 'note' ? t('common.save') : t('common.confirm')}
           </Button>
         </DialogActions>
       </Dialog>

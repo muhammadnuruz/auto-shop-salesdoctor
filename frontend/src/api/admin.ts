@@ -1,4 +1,4 @@
-import { ApiError, rawRequest, request, setCsrfToken, type RawResponse } from './http';
+import { ApiError, postBlob, rawRequest, request, setCsrfToken, type RawResponse } from './http';
 import type {
   AppSettings,
   AppSettingsUpdate,
@@ -265,11 +265,13 @@ export const productsApi = {
   /** SD ids of every product matching the list filters (for "select all") */
   ids: (p: Omit<ProductListParams, 'limit' | 'offset' | 'price_type' | 'warehouse'>) =>
     request<{ total: number; sd_ids: string[] }>(`${A}/products/ids`, { query: { ...p } }),
-  bulkHidden: (sdIds: string[], hidden: boolean) =>
+  /** Only the fields present are changed; `note: null` clears the note. */
+  bulk: (sdIds: string[], patch: { hidden?: boolean; note?: string | null }) =>
     request<{ updated: number; not_found: number }>(`${A}/products/bulk`, {
       method: 'POST',
-      body: { sd_ids: sdIds, hidden },
+      body: { sd_ids: sdIds, ...patch },
     }),
+  exportXlsx: (sdIds: string[]) => postBlob(`${A}/products/export.xlsx`, { sd_ids: sdIds }),
   patch: (sdId: string, body: { hidden?: boolean; note?: string | null }) =>
     request<AdminProduct>(`${A}/products/${encodeURIComponent(sdId)}`, {
       method: 'PATCH',
