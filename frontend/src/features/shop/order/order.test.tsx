@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SETTINGS_KEY } from '@/features/orders/useOrderSettings';
 import { catalogItem, invoiceFixture, ORDER_ID, orderFixture, orderLine } from '@/test/fixtures';
@@ -638,6 +638,24 @@ describe('new order + read-only order', () => {
     renderApp('/s/demo-shop/order/new');
     await screen.findByTestId('scanner-input');
     expect(fake.callsTo('POST', '/orders')).toHaveLength(1);
+  });
+
+  it('scanning right after /order/new uses the created order version (no refetch needed)', async () => {
+    const fake = new FakeOrders({ version: 4 });
+    fake.install();
+    // the background refetch is slow: the scan must not wait for it nor send version 0
+    server.use(
+      http.get(`*/api/shop/orders/${ORDER_ID}`, async () => {
+        await delay(3000);
+        return HttpResponse.json(fake.order);
+      }),
+    );
+    renderApp('/s/demo-shop/order/new');
+    const scanner = await screen.findByTestId('scanner-input');
+    const user = userEvent.setup();
+    await user.type(scanner, '4780000000011{Enter}');
+    await waitFor(() => expect(fake.callsTo('POST', '/lines/scan')).toHaveLength(1));
+    expect(fake.callsTo('POST', '/lines/scan')[0]?.body).toMatchObject({ version: 4 });
   });
 
   it('too many drafts: shows the server reason with a way out', async () => {
