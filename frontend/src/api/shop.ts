@@ -1,5 +1,6 @@
 import { ApiError, rawRequest, request, setCsrfToken, type RawResponse } from './http';
 import type {
+  Invoice,
   CatalogCategory,
   CatalogItem,
   CatalogPage,
@@ -118,6 +119,8 @@ export const ordersApi = {
   cancel: (id: string, version?: number): Promise<FlowResponse> =>
     rawRequest(`${O}/${id}/cancel`, { method: 'POST', body: { version } }),
   duplicate: (id: string) => request<Order>(`${O}/${id}/duplicate`, { method: 'POST' }),
+  invoice: (id: string) => request<Invoice>(`${O}/${id}/invoice`),
+  invoicePdfUrl: (id: string, lang: string) => `${O}/${id}/invoice.pdf?lang=${lang}`,
 };
 
 const C = '/api/shop/catalog';

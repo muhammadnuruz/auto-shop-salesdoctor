@@ -1,6 +1,7 @@
 import CameraAltIcon from '@mui/icons-material/CameraAlt';
 import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import SearchIcon from '@mui/icons-material/Search';
+import PrintIcon from '@mui/icons-material/Print';
 import SendIcon from '@mui/icons-material/Send';
 import SettingsIcon from '@mui/icons-material/Settings';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
@@ -35,6 +36,7 @@ import { beepError, beepOk } from '@/lib/beep';
 import { describeError } from '@/lib/errors';
 import { formatMoney } from '@/lib/format';
 import { AddFromCatalogDialog, type CatalogSource } from '@/features/orders/AddFromCatalogDialog';
+import { InvoiceDialog } from '@/features/orders/InvoiceDialog';
 import { OrderLinesTable } from '@/features/orders/OrderLinesTable';
 import { StateChip } from '@/features/orders/StateChip';
 import {
@@ -124,7 +126,7 @@ function OrderScreen({
   editor: Editor;
   order: Order;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const theme = useTheme();
   const mobile = useMediaQuery(theme.breakpoints.down('sm'));
   const navigate = useNavigate();
@@ -143,6 +145,7 @@ function OrderScreen({
   );
   const [submitting, setSubmitting] = useState(false);
   const [justSent, setJustSent] = useState(false);
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [submitProblems, setSubmitProblems] = useState<OrderProblem[] | null>(null);
   const [submitNote, setSubmitNote] = useState<{
     kind: 'unavailable' | 'busy' | 'rejected';
@@ -332,15 +335,30 @@ function OrderScreen({
   });
 
   // ---- render ---------------------------------------------------------------------------------------
+  const hasInvoice = !!order.sd_id && (order.state === 'sent' || order.state === 'cancelled');
+  const invoiceDialog = hasInvoice && (
+    <InvoiceDialog
+      open={invoiceOpen}
+      onClose={() => setInvoiceOpen(false)}
+      queryKey={['shop', 'invoice', order.public_id, order.version]}
+      load={() => ordersApi.invoice(order.public_id)}
+      pdfUrl={ordersApi.invoicePdfUrl(order.public_id, i18n.language === 'uz' ? 'uz' : 'ru')}
+      fullScreen={mobile}
+    />
+  );
   if (justSent && order.state === 'sent') {
     return (
-      <SentPanel
-        order={order}
-        slug={slug}
-        onNew={startNew}
-        onRepeat={() => repeat.mutate()}
-        busy={repeat.isPending}
-      />
+      <>
+        <SentPanel
+          order={order}
+          slug={slug}
+          onNew={startNew}
+          onRepeat={() => repeat.mutate()}
+          onInvoice={() => setInvoiceOpen(true)}
+          busy={repeat.isPending}
+        />
+        {invoiceDialog}
+      </>
     );
   }
   if (order.state === 'outcome_unknown' || order.state === 'submitting') {
@@ -370,6 +388,16 @@ function OrderScreen({
           severity={order.state === 'sent' ? 'success' : 'info'}
           action={
             <Stack direction="row" spacing={1}>
+              {hasInvoice && (
+                <Button
+                  color="inherit"
+                  size="small"
+                  startIcon={<PrintIcon />}
+                  onClick={() => setInvoiceOpen(true)}
+                >
+                  {t('invoice.open')}
+                </Button>
+              )}
               {canShopCancel(order) && (
                 <Button color="inherit" size="small" onClick={() => setDialog('cancel')}>
                   {t('orders.cancel')}
@@ -621,6 +649,7 @@ function OrderScreen({
         </Paper>
       )}
 
+      {invoiceDialog}
       <AddFromCatalogDialog
         open={dialog === 'catalog'}
         source={source}

@@ -1,4 +1,12 @@
-import type { AdminOrder, AdminUser, CatalogItem, Order, OrderLine, ShopMe } from '@/api/types';
+import type {
+  AdminOrder,
+  AdminUser,
+  CatalogItem,
+  Invoice,
+  Order,
+  OrderLine,
+  ShopMe,
+} from '@/api/types';
 
 export const ALL_PERMS = [
   'links.read',
@@ -216,5 +224,42 @@ export const linkStats = (over: Record<string, unknown> = {}) => ({
     { date: '2026-10-14', logins: 2, orders: 2, sum: 5000 },
   ],
   top_clients: [{ client_id: 7, name: 'Shop Seven', orders: 2, sum: 5000 }],
+  ...over,
+});
+
+export const invoiceFixture = (over: Partial<Invoice> = {}): Invoice => ({
+  source: 'sd',
+  warning: null,
+  number: '53146',
+  sd_id: 'd0_53146',
+  code: 'WEB-000001',
+  sd_status: 1,
+  date: '2026-10-16 09:46:06',
+  shipment_date: '2026-10-17',
+  client: { name: 'Мансур', phone: '+998 90 068 92 95', address: 'Shergiron mahallasi, M37' },
+  agent: 'NIGORA',
+  warehouse: 'Основной склад',
+  price_type: 'Бот цена',
+  trade: 'Parfum Brend',
+  comment: null,
+  lines: [
+    {
+      position: 1,
+      product_ref: 'p1',
+      name: 'Oil filter',
+      thumb_url: null,
+      unit: 'шт',
+      pack_quantity: 10,
+      blocks: 1,
+      quantity: 10,
+      price: 1700,
+      discount: 0,
+      sum: 17000,
+    },
+  ],
+  total_qty: 10,
+  total_sum: 17000,
+  discount_sum: 0,
+  total_due: 17000,
   ...over,
 });

@@ -1,5 +1,6 @@
 import { ApiError, postBlob, rawRequest, request, setCsrfToken, type RawResponse } from './http';
 import type {
+  Invoice,
   AppSettings,
   AppSettingsUpdate,
   AuditFacets,
@@ -231,6 +232,8 @@ export const adminOrdersApi = {
     return res.blob();
   },
   get: (id: string, signal?: AbortSignal) => request<AdminOrder>(`${A}/orders/${id}`, { signal }),
+  invoice: (id: string) => request<Invoice>(`${A}/orders/${id}/invoice`),
+  invoicePdfUrl: (id: string, lang: string) => `${A}/orders/${id}/invoice.pdf?lang=${lang}`,
   /** 200 saved/sent, 202 outcome unknown, 4xx/5xx structured problems. */
   edit: (id: string, body: AdminOrderPatch): Promise<AdminOrderResponse> =>
     rawRequest(`${A}/orders/${id}`, { method: 'PATCH', body }),

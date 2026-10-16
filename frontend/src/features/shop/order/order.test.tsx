@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SETTINGS_KEY } from '@/features/orders/useOrderSettings';
-import { catalogItem, ORDER_ID, orderFixture, orderLine } from '@/test/fixtures';
+import { catalogItem, invoiceFixture, ORDER_ID, orderFixture, orderLine } from '@/test/fixtures';
 import { FakeOrders } from '@/test/orderServer';
 import { server } from '@/test/server';
 import { renderApp } from '@/test/utils';
@@ -224,6 +224,53 @@ describe('order screen: submit', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Отправить' }));
     return user;
   };
+
+  it('sent: the waybill opens from Sales Doctor data, with print and PDF', async () => {
+    const fake = new FakeOrders(withLine());
+    const invoiceCalls: string[] = [];
+    server.use(
+      http.get('*/api/shop/orders/:id/invoice', ({ params }) => {
+        invoiceCalls.push(String(params.id));
+        return HttpResponse.json(invoiceFixture());
+      }),
+    );
+    const user = await submitFlow(fake);
+    await user.click(await screen.findByRole('button', { name: 'Накладная' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Печать накладной' });
+    const paper = await within(dialog).findByTestId('invoice');
+    expect(paper).toHaveTextContent('НАКЛАДНАЯ № 53146');
+    expect(paper).toHaveTextContent('16.10.2026 09:46');
+    expect(paper).toHaveTextContent('Мансур');
+    expect(within(paper).getByTestId('invoice-total')).toHaveTextContent('17 000 сум');
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: 'Скачать PDF' })).toHaveAttribute(
+      'href',
+      `/api/shop/orders/${ORDER_ID}/invoice.pdf?lang=ru`,
+    );
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    await user.click(within(dialog).getByRole('button', { name: 'Печатать накладную' }));
+    expect(print).toHaveBeenCalledOnce();
+    expect(document.body).toHaveClass('printing-invoice');
+    window.dispatchEvent(new Event('afterprint'));
+    expect(document.body).not.toHaveClass('printing-invoice');
+    print.mockRestore();
+    expect(invoiceCalls).toEqual([ORDER_ID]);
+  });
+
+  it('waybill built from the local copy says so', async () => {
+    const fake = new FakeOrders(withLine());
+    server.use(
+      http.get('*/api/shop/orders/:id/invoice', () =>
+        HttpResponse.json(invoiceFixture({ source: 'local', warning: 'sd_unavailable' })),
+      ),
+    );
+    const user = await submitFlow(fake);
+    await user.click(await screen.findByRole('button', { name: 'Накладная' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Печать накладной' });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'Sales Doctor сейчас недоступен',
+    );
+  });
 
   it('sent: shows the SD number with "Новый заказ" / "Повторить"', async () => {
     const fake = new FakeOrders(withLine());
