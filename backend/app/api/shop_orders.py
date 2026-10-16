@@ -8,7 +8,7 @@ summary). Prices are never accepted from the client.
 import uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -22,6 +22,7 @@ from app.api.deps import (
     DbDep,
     MetaDep,
     RedisDep,
+    SdDep,
     ServicesDep,
     SettingsDep,
     ShopContext,
@@ -29,16 +30,19 @@ from app.api.deps import (
     check_origin,
     enforce_rate_limit,
 )
-from app.api.schemas import ImportPreviewOut, OrderOut, ShopOrderListOut
+from app.api.schemas import ImportPreviewOut, InvoiceOut, OrderOut, ShopOrderListOut
 from app.core.ratelimit import Limit
 from app.domain.quantity import MAX_BLOCKS, MAX_PIECES
 from app.models import ProductBarcode, SdClient, SdProduct, ShopOrder, ShopOrderLine
 from app.models.orders import ORDER_STATES
 from app.services import catalog, order_import
 from app.services import orders as svc
+from app.services.invoice import build_invoice
+from app.services.invoice_pdf import pdf_response
 from app.services.order_flow import FlowResult, cancel_order, discard_order, submit_order
 from app.services.orders import Actor, LineInput, problem
 from app.sync.common import SD_TZ
+from app.sync.products import sd_origin
 
 router = APIRouter(
     prefix="/api/shop/orders", tags=["shop-orders"], dependencies=[Depends(check_origin)]
@@ -302,6 +306,35 @@ async def import_apply(body: ImportApplyIn, ctx: ShopDep, db: DbDep) -> dict[str
 async def get_order(public_id: uuid.UUID, ctx: ShopDep, db: DbDep) -> dict[str, Any]:
     order = await svc.get_order(db, public_id, client_id=ctx.client.id)
     return await svc.render_order(db, order, ctx.client)
+
+
+@router.get("/{public_id}/invoice", response_model=InvoiceOut)
+async def get_invoice(
+    public_id: uuid.UUID, ctx: ShopDep, db: DbDep, sd: SdDep, redis: RedisDep
+) -> dict[str, Any]:
+    """Waybill of a sent order, read back from Sales Doctor (local copy when SD is down)."""
+    order = await svc.get_order(db, public_id, client_id=ctx.client.id)
+    return await build_invoice(db, sd, redis, order)
+
+
+@router.get("/{public_id}/invoice.pdf")
+async def get_invoice_pdf(
+    public_id: uuid.UUID,
+    ctx: ShopDep,
+    db: DbDep,
+    sd: SdDep,
+    redis: RedisDep,
+    settings: SettingsDep,
+    lang: Literal["ru", "uz"] = "ru",
+) -> Response:
+    order = await svc.get_order(db, public_id, client_id=ctx.client.id)
+    inv = await build_invoice(db, sd, redis, order)
+    return await pdf_response(
+        inv,
+        sd_origin=sd_origin(settings.SD_BASE_URL),
+        user_agent=settings.SD_USER_AGENT,
+        lang=lang,
+    )
 
 
 @router.patch("/{public_id}", response_model=OrderOut, response_model_exclude_unset=True)

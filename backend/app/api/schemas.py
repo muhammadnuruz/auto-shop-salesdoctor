@@ -275,3 +275,48 @@ class ImportPreviewOut(BaseModel):
     matched: list[ImportMatched]
     ambiguous: list[ImportAmbiguous]
     unmatched: list[ImportUnmatched]
+
+
+# ------------------------------------------------------------------------------ waybill
+
+
+class InvoiceClientOut(BaseModel):
+    name: str | None
+    phone: str | None
+    address: str | None
+
+
+class InvoiceLineOut(BaseModel):
+    position: int
+    product_ref: str
+    name: str | None
+    thumb_url: str | None
+    unit: str | None
+    pack_quantity: Number | None
+    blocks: Number
+    quantity: Number
+    price: Number
+    discount: Number
+    sum: Number
+
+
+class InvoiceOut(BaseModel):
+    source: Literal["sd", "local"]
+    warning: Literal["sd_unavailable", "sd_not_found"] | None
+    number: str
+    sd_id: str | None
+    code: str
+    sd_status: int | None
+    date: str | None
+    shipment_date: str | None
+    client: InvoiceClientOut
+    agent: str | None
+    warehouse: str | None
+    price_type: str | None
+    trade: str | None
+    comment: str | None
+    lines: list[InvoiceLineOut]
+    total_qty: Number
+    total_sum: Number
+    discount_sum: Number
+    total_due: Number

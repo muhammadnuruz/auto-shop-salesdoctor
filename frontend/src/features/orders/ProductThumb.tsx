@@ -12,18 +12,27 @@ interface Props {
   thumbUrl: string | null;
   imageUrl: string | null;
   size?: number;
+  /** fill the parent's width as a square (card view); prefers the full-size image */
+  fill?: boolean;
 }
 
 /** Product photo thumbnail; click opens the full-size image. */
-export function ProductThumb({ name: nameOrNull, thumbUrl, imageUrl, size = 44 }: Props) {
+export function ProductThumb({
+  name: nameOrNull,
+  thumbUrl,
+  imageUrl,
+  size = 44,
+  fill = false,
+}: Props) {
   const { t } = useTranslation();
   const name = nameOrNull ?? '';
   const [open, setOpen] = useState(false);
   const [broken, setBroken] = useState(false);
-  const src = thumbUrl ?? imageUrl;
+  const src = fill ? (imageUrl ?? thumbUrl) : (thumbUrl ?? imageUrl);
   const frame = {
-    width: size,
-    height: size,
+    width: fill ? '100%' : size,
+    height: fill ? 'auto' : size,
+    aspectRatio: '1 / 1',
     borderRadius: 1,
     border: 1,
     borderColor: 'divider',
@@ -36,7 +45,7 @@ export function ProductThumb({ name: nameOrNull, thumbUrl, imageUrl, size = 44 }
   if (!src || broken) {
     return (
       <Box sx={frame} aria-hidden>
-        <ImageNotSupportedIcon color="disabled" fontSize="small" />
+        <ImageNotSupportedIcon color="disabled" fontSize={fill ? 'large' : 'small'} />
       </Box>
     );
   }
@@ -54,7 +63,7 @@ export function ProductThumb({ name: nameOrNull, thumbUrl, imageUrl, size = 44 }
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={() => setBroken(true)}
-          sx={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          sx={{ width: '100%', height: '100%', objectFit: fill ? 'contain' : 'cover' }}
         />
       </ButtonBase>
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="sm" fullWidth>

@@ -122,6 +122,7 @@ class FakeOrderSD:
                     "code_1C": code,
                     "status": o["status"],
                     "orderProducts": o["orderProducts"],
+                    **o.get("sd_extra", {}),  # fields SD adds (totals, dates, names...)
                 }
                 for code, o in self.orders.items()
             ]

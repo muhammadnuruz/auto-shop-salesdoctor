@@ -1,15 +1,18 @@
 """Admin products API: browse mirror (stock/prices), hide from the shop, extra barcodes."""
 
-from typing import Annotated, Any
+import io
+from typing import Annotated, Any, Self
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import ColumnElement, and_, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AdminContext, DbDep, MetaDep, require
 from app.api.schemas import Number
+from app.core.xlsx import cell
 from app.models import (
     ProductBarcode,
     ProductSetting,
@@ -33,6 +36,43 @@ BARCODE_PATTERN = r"^[0-9]{8,14}$"
 class ProductPatch(BaseModel):
     hidden: bool | None = None
     note: str | None = Field(None, max_length=1000)
+
+
+BULK_MAX = 10_000
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+SdIds = Annotated[
+    list[Annotated[str, Field(min_length=1, max_length=64)]],
+    Field(min_length=1, max_length=BULK_MAX),
+]
+
+
+class BulkIn(BaseModel):
+    """Bulk update; only the fields sent are changed (``note: null`` clears the note)."""
+
+    sd_ids: SdIds
+    hidden: bool | None = None
+    note: str | None = Field(None, max_length=1000)
+
+    @model_validator(mode="after")
+    def _something(self) -> Self:
+        if self.hidden is None and "note" not in self.model_fields_set:
+            raise ValueError("send hidden and/or note")
+        return self
+
+
+class ExportIn(BaseModel):
+    sd_ids: SdIds
+
+
+class BulkHiddenOut(BaseModel):
+    updated: int
+    not_found: int
+
+
+class ProductIdsOut(BaseModel):
+    total: int
+    sd_ids: list[str]
 
 
 class BarcodeIn(BaseModel):
@@ -182,28 +222,16 @@ def _select() -> Any:
     )
 
 
-@router.get("", response_model=ProductListOut, response_model_exclude_unset=True)
-async def list_products(
-    ctx: ReadDep,
-    db: DbDep,
-    q: Annotated[str | None, Query(max_length=100)] = None,
-    active: bool | None = None,
-    hidden: bool | None = None,
-    has_barcode: bool | None = None,
-    category: Annotated[str | None, Query(max_length=64)] = None,
-    price_type: Annotated[str | None, Query(max_length=64)] = None,
-    warehouse: Annotated[str | None, Query(max_length=64)] = None,
-    limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
-) -> dict[str, Any]:
-    if price_type is not None and not await db.scalar(
-        select(SdPriceType.id).where(SdPriceType.sd_id == price_type, SdPriceType.kind == "sale")
-    ):
-        raise problem(422, "unknown_price_type", message="Unknown sale price type")
-    if warehouse is not None and not await db.scalar(
-        select(SdWarehouse.id).where(SdWarehouse.sd_id == warehouse)
-    ):
-        raise problem(422, "unknown_warehouse", message="Unknown warehouse")
+def _filters(
+    *,
+    q: str | None,
+    active: bool | None,
+    hidden: bool | None,
+    has_barcode: bool | None,
+    category: str | None,
+) -> list[ColumnElement[bool]]:
+    """WHERE conditions shared by the list and the "select all matching" id query.
+    Callers must outer-join ProductSetting (``hidden`` filter)."""
     conds: list[ColumnElement[bool]] = []
     if q:
         conds.append(
@@ -226,6 +254,32 @@ async def list_products(
         conds.append(exists if has_barcode else ~exists)
     if category:
         conds.append(SdProduct.category_sd_id == category)
+    return conds
+
+
+@router.get("", response_model=ProductListOut, response_model_exclude_unset=True)
+async def list_products(
+    ctx: ReadDep,
+    db: DbDep,
+    q: Annotated[str | None, Query(max_length=100)] = None,
+    active: bool | None = None,
+    hidden: bool | None = None,
+    has_barcode: bool | None = None,
+    category: Annotated[str | None, Query(max_length=64)] = None,
+    price_type: Annotated[str | None, Query(max_length=64)] = None,
+    warehouse: Annotated[str | None, Query(max_length=64)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+    if price_type is not None and not await db.scalar(
+        select(SdPriceType.id).where(SdPriceType.sd_id == price_type, SdPriceType.kind == "sale")
+    ):
+        raise problem(422, "unknown_price_type", message="Unknown sale price type")
+    if warehouse is not None and not await db.scalar(
+        select(SdWarehouse.id).where(SdWarehouse.sd_id == warehouse)
+    ):
+        raise problem(422, "unknown_warehouse", message="Unknown warehouse")
+    conds = _filters(q=q, active=active, hidden=hidden, has_barcode=has_barcode, category=category)
     total = await db.scalar(
         select(func.count())
         .select_from(SdProduct)
@@ -243,6 +297,140 @@ async def list_products(
     ).all()
     items = await _items(db, list(rows), price_type=price_type, warehouse=warehouse)
     return {"total": total or 0, "items": items}
+
+
+@router.get("/ids", response_model=ProductIdsOut)
+async def list_product_ids(
+    ctx: ReadDep,
+    db: DbDep,
+    q: Annotated[str | None, Query(max_length=100)] = None,
+    active: bool | None = None,
+    hidden: bool | None = None,
+    has_barcode: bool | None = None,
+    category: Annotated[str | None, Query(max_length=64)] = None,
+) -> dict[str, Any]:
+    """SD ids of every product matching the list filters ("select all" across pages)."""
+    conds = _filters(q=q, active=active, hidden=hidden, has_barcode=has_barcode, category=category)
+    ids = (
+        await db.scalars(
+            select(SdProduct.sd_id)
+            .outerjoin(ProductSetting, ProductSetting.product_id == SdProduct.id)
+            .where(*conds)
+            .order_by(SdProduct.name, SdProduct.id)
+            .limit(BULK_MAX)
+        )
+    ).all()
+    return {"total": len(ids), "sd_ids": list(ids)}
+
+
+@router.post("/bulk", response_model=BulkHiddenOut)
+async def bulk_update(body: BulkIn, ctx: WriteDep, db: DbDep, meta: MetaDep) -> dict[str, Any]:
+    """Hide/show and/or set the note of many products at once (one upsert, one audit entry)."""
+    wanted = list(dict.fromkeys(body.sd_ids))
+    found = (
+        await db.execute(select(SdProduct.id, SdProduct.sd_id).where(SdProduct.sd_id.in_(wanted)))
+    ).all()
+    changes: dict[str, Any] = {}
+    if body.hidden is not None:
+        changes["hidden"] = body.hidden
+    if "note" in body.model_fields_set:
+        changes["note"] = (body.note or "").strip() or None
+    if found:
+        stmt = pg_insert(ProductSetting).values(
+            [
+                {"product_id": pid, "hidden": False, "updated_by": ctx.user.id, **changes}
+                for pid, _ in found
+            ]
+        )
+        await db.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[ProductSetting.product_id],
+                set_={
+                    **{k: getattr(stmt.excluded, k) for k in changes},
+                    "updated_by": stmt.excluded.updated_by,
+                    "updated_at": func.now(),
+                },
+            )
+        )
+    audit.record(
+        db,
+        actor_type="admin",
+        actor_id=ctx.user.id,
+        action="product.bulk_update",
+        entity_type="product",
+        entity_id="bulk",
+        after={**changes, "count": len(found), "sd_ids": [sd for _, sd in found][:200]},
+        meta=meta,
+    )
+    await db.commit()
+    return {"updated": len(found), "not_found": len(wanted) - len(found)}
+
+
+@router.post("/export.xlsx")
+async def export_products(body: ExportIn, ctx: ReadDep, db: DbDep, meta: MetaDep) -> Response:
+    """The selected products as a workbook: one column per warehouse stock and sale price type."""
+    from openpyxl import Workbook
+
+    rows = (
+        await db.execute(
+            _select()
+            .where(SdProduct.sd_id.in_(list(dict.fromkeys(body.sd_ids))))
+            .order_by(SdProduct.name, SdProduct.id)
+        )
+    ).all()
+    items = await _items(db, list(rows))
+    warehouses = sorted({(s["warehouse"], s["name"]) for i in items for s in i["stock"]})
+    price_types = sorted({(p["price_type"], p["name"]) for i in items for p in i["prices"]})
+
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("products")
+    ws.append(
+        [
+            "SD id", "Code", "Name", "Category", "Active", "Hidden", "Note", "Pack qty",
+            "Barcodes", "Stock total",
+            *(f"Stock: {name or sd}" for sd, name in warehouses),
+            *(f"Price: {name or sd}" for sd, name in price_types),
+        ]
+    )  # fmt: skip
+    for it in items:
+        stock = {s["warehouse"]: s["quantity"] for s in it["stock"]}
+        prices = {p["price_type"]: p["price"] for p in it["prices"]}
+        ws.append(
+            [
+                cell(it["sd_id"]),
+                cell(it["code"]),
+                cell(it["name"]),
+                cell(it["category_name"]),
+                "yes" if it["active"] else "no",
+                "yes" if it["hidden"] else "no",
+                cell(it["note"]),
+                it["pack_quantity"],
+                cell(", ".join(b["barcode"] for b in it["barcodes"])),
+                sum(stock.values()),
+                *(stock.get(sd) for sd, _ in warehouses),
+                *(prices.get(sd) for sd, _ in price_types),
+            ]
+        )
+    buf = io.BytesIO()
+    wb.save(buf)
+    audit.record(
+        db,
+        actor_type="admin",
+        actor_id=ctx.user.id,
+        action="product.export",
+        entity_type="product",
+        after={"rows": len(items)},
+        meta=meta,
+    )
+    await db.commit()
+    return Response(
+        buf.getvalue(),
+        media_type=XLSX,
+        headers={
+            "Content-Disposition": 'attachment; filename="products.xlsx"',
+            "X-Rows": str(len(items)),
+        },
+    )
 
 
 async def _product(db: AsyncSession, sd_id: str) -> SdProduct:

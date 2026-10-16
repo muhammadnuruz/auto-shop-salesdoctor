@@ -3,7 +3,14 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
 import type { AdminOrder } from '@/api/types';
-import { ORDER_ID, adminOrderFixture, adminRefs, adminUser, orderLine } from '@/test/fixtures';
+import {
+  ORDER_ID,
+  adminOrderFixture,
+  adminRefs,
+  adminUser,
+  invoiceFixture,
+  orderLine,
+} from '@/test/fixtures';
 import { server } from '@/test/server';
 import { renderApp } from '@/test/utils';
 
@@ -117,6 +124,31 @@ describe('admin orders list', () => {
 describe('admin order detail', () => {
   const serve = (order: AdminOrder) =>
     server.use(http.get(`*/api/admin/orders/${ORDER_ID}`, () => HttpResponse.json(order)));
+
+  it('sent orders open the waybill (PDF in the UI language)', async () => {
+    setup(VIEWER);
+    serve(adminOrderFixture());
+    server.use(
+      http.get(`*/api/admin/orders/${ORDER_ID}/invoice`, () => HttpResponse.json(invoiceFixture())),
+    );
+    renderApp(`/admin/orders/${ORDER_ID}`);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Накладная' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Печать накладной' });
+    expect(await within(dialog).findByTestId('invoice')).toHaveTextContent('НАКЛАДНАЯ № 53146');
+    expect(within(dialog).getByRole('link', { name: 'Скачать PDF' })).toHaveAttribute(
+      'href',
+      `/api/admin/orders/${ORDER_ID}/invoice.pdf?lang=ru`,
+    );
+  });
+
+  it('drafts and failed orders have no waybill', async () => {
+    setup(VIEWER);
+    serve(adminOrderFixture({ state: 'failed', sd_id: null }));
+    renderApp(`/admin/orders/${ORDER_ID}`);
+    await screen.findByText('У вас нет права изменять заказы.');
+    expect(screen.queryByRole('button', { name: 'Накладная' })).not.toBeInTheDocument();
+  });
 
   it('read-only viewers get no edit / status / delete actions and see the timeline', async () => {
     setup(VIEWER);

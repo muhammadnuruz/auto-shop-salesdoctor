@@ -1,4 +1,5 @@
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import PrintIcon from '@mui/icons-material/Print';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
@@ -15,12 +16,14 @@ export function SentPanel({
   slug,
   onNew,
   onRepeat,
+  onInvoice,
   busy,
 }: {
   order: Order;
   slug: string;
   onNew: () => void;
   onRepeat: () => void;
+  onInvoice: () => void;
   busy: boolean;
 }) {
   const { t } = useTranslation();
@@ -47,7 +50,10 @@ export function SentPanel({
             spacing={1}
             sx={{ width: { xs: '100%', sm: 'auto' } }}
           >
-            <Button variant="contained" onClick={onNew} disabled={busy}>
+            <Button variant="contained" startIcon={<PrintIcon />} onClick={onInvoice}>
+              {t('invoice.open')}
+            </Button>
+            <Button variant="outlined" onClick={onNew} disabled={busy}>
               {t('order.newOrder')}
             </Button>
             <Button variant="outlined" onClick={onRepeat} disabled={busy}>

@@ -1,5 +1,19 @@
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import DownloadIcon from '@mui/icons-material/Download';
+import NoteAltOutlinedIcon from '@mui/icons-material/NoteAltOutlined';
 import SearchIcon from '@mui/icons-material/Search';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import Alert from '@mui/material/Alert';
+import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
+import Card from '@mui/material/Card';
+import CardActionArea from '@mui/material/CardActionArea';
+import Checkbox from '@mui/material/Checkbox';
 import Chip from '@mui/material/Chip';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogTitle from '@mui/material/DialogTitle';
 import InputAdornment from '@mui/material/InputAdornment';
 import MenuItem from '@mui/material/MenuItem';
 import Paper from '@mui/material/Paper';
@@ -13,7 +27,8 @@ import TablePagination from '@mui/material/TablePagination';
 import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSnackbar } from 'notistack';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { productsApi } from '@/api/admin';
@@ -21,9 +36,12 @@ import { qk } from '@/api/keys';
 import type { AdminProduct } from '@/api/types';
 import { PageHeader } from '@/components/PageHeader';
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/States';
+import { ViewToggle } from '@/components/ViewToggle';
 import { ProductThumb } from '@/features/orders/ProductThumb';
 import { useDebounced } from '@/hooks/useDebounced';
 import { usePaging } from '@/hooks/usePaging';
+import { useViewMode } from '@/hooks/useViewMode';
+import { saveBlob } from '@/lib/download';
 import { formatAmount } from '@/lib/format';
 import { useCan } from '../AdminContext';
 import { useRefs } from '../queries';
@@ -48,7 +66,8 @@ function TriSelect({
       label={label}
       value={value}
       onChange={(e) => onChange(e.target.value as Tri)}
-      sx={{ minWidth: 150 }}
+      fullWidth={false}
+      sx={{ flex: '1 1 150px' }}
     >
       <MenuItem value="all">{t('common.all')}</MenuItem>
       <MenuItem value="yes">{t('common.yes')}</MenuItem>
@@ -57,55 +76,160 @@ function TriSelect({
   );
 }
 
+const stockTotal = (p: AdminProduct) => p.stock.reduce((a, s) => a + s.quantity, 0);
+
+function StatusChips({ p }: { p: AdminProduct }) {
+  const { t } = useTranslation();
+  return (
+    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
+      <Chip
+        size="small"
+        color={p.active ? 'success' : 'default'}
+        label={p.active ? t('prod.active') : t('prod.inactive')}
+      />
+      {p.hidden && <Chip size="small" color="warning" label={t('prod.hidden')} />}
+    </Stack>
+  );
+}
+
 export default function AdminProductsPage() {
   const { t } = useTranslation();
   const can = useCan();
+  const canWrite = can('products.write');
   const refs = useRefs();
+  const qc = useQueryClient();
+  const { enqueueSnackbar } = useSnackbar();
   const paging = usePaging(25);
+  const [view, setView] = useViewMode('admin-products-view');
   const [search, setSearch] = useState('');
   const [active, setActive] = useState<Tri>('all');
   const [hidden, setHidden] = useState<Tri>('all');
   const [hasBarcode, setHasBarcode] = useState<Tri>('all');
   const [category, setCategory] = useState('');
   const [selected, setSelected] = useState<AdminProduct | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  /** the selection came from "select all matching the filter" */
+  const [allMatching, setAllMatching] = useState(false);
+  const [dialog, setDialog] = useState<'hide' | 'show' | 'note' | null>(null);
+  const [noteText, setNoteText] = useState('');
   const q = useDebounced(search.trim());
 
-  const params = {
+  const filters = {
     q: q || undefined,
     active: tri(active),
     hidden: tri(hidden),
     has_barcode: tri(hasBarcode),
     category: category || undefined,
-    limit: paging.pageSize,
-    offset: paging.offset,
   };
+  const params = { ...filters, limit: paging.pageSize, offset: paging.offset };
   const list = useQuery({
     queryKey: qk.admin.products.list(params),
     queryFn: ({ signal }) => productsApi.list(params, signal),
     placeholderData: keepPreviousData,
   });
   const items = list.data?.items ?? [];
+  const total = list.data?.total ?? 0;
+
+  const clearSelection = () => {
+    setPicked(new Set());
+    setAllMatching(false);
+  };
+  // a filter change makes an earlier selection meaningless
   const reset =
     <T,>(set: (v: T) => void) =>
     (v: T) => {
       set(v);
       paging.reset();
+      clearSelection();
     };
+
+  const toggle = (sdId: string) => {
+    setAllMatching(false);
+    setPicked((cur) => {
+      const next = new Set(cur);
+      if (next.has(sdId)) next.delete(sdId);
+      else next.add(sdId);
+      return next;
+    });
+  };
+  const pageAll = items.length > 0 && items.every((p) => picked.has(p.sd_id));
+  const pageSome = items.some((p) => picked.has(p.sd_id));
+  const togglePage = () => {
+    setAllMatching(false);
+    setPicked((cur) => {
+      const next = new Set(cur);
+      for (const p of items) {
+        if (pageAll) next.delete(p.sd_id);
+        else next.add(p.sd_id);
+      }
+      return next;
+    });
+  };
+
+  const matching = useMutation({
+    mutationFn: () => productsApi.ids(filters),
+    onSuccess: (r) => {
+      setPicked(new Set(r.sd_ids));
+      setAllMatching(true);
+    },
+  });
+  const bulk = useMutation({
+    mutationFn: (patch: { hidden?: boolean; note?: string | null }) =>
+      productsApi.bulk([...picked], patch),
+    onSuccess: (r) => {
+      enqueueSnackbar(t('prod.bulkDone', { count: r.updated }), { variant: 'success' });
+      clearSelection();
+      void qc.invalidateQueries({ queryKey: qk.admin.products.all() });
+    },
+    onSettled: () => setDialog(null),
+  });
+  const exportXlsx = useMutation({
+    mutationFn: () => productsApi.exportXlsx([...picked]),
+    onSuccess: (blob) => saveBlob(blob, 'products.xlsx'),
+  });
+  const applyDialog = () => {
+    if (dialog === 'hide' || dialog === 'show') bulk.mutate({ hidden: dialog === 'hide' });
+    else if (dialog === 'note') bulk.mutate({ note: noteText.trim() || null });
+  };
+
+  const pageCheckbox = (
+    <Checkbox
+      checked={pageAll}
+      indeterminate={!pageAll && pageSome}
+      disabled={items.length === 0}
+      onChange={togglePage}
+      slotProps={{ input: { 'aria-label': t('prod.selectPage') } }}
+    />
+  );
+  const rowCheckbox = (p: AdminProduct, sx?: object) => (
+    <Checkbox
+      checked={picked.has(p.sd_id)}
+      onChange={() => toggle(p.sd_id)}
+      onClick={(e) => e.stopPropagation()}
+      slotProps={{ input: { 'aria-label': t('prod.select', { name: p.name }) } }}
+      sx={sx}
+    />
+  );
 
   return (
     <>
       <PageHeader title={t('nav.products')} />
       <Paper variant="outlined">
-        <Stack direction="row" spacing={1.5} useFlexGap flexWrap="wrap" sx={{ p: 2 }}>
+        <Stack
+          direction="row"
+          spacing={1.5}
+          useFlexGap
+          flexWrap="wrap"
+          alignItems="center"
+          sx={{ p: 2 }}
+        >
           <TextField
             label={t('common.search')}
             placeholder={t('prod.searchHint')}
             value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              paging.reset();
-            }}
-            sx={{ minWidth: 260 }}
+            onChange={(e) => reset(setSearch)(e.target.value)}
+            fullWidth={false}
+            sx={{ flex: '3 1 260px' }}
             slotProps={{
               input: {
                 startAdornment: (
@@ -129,7 +253,8 @@ export default function AdminProductsPage() {
             label={t('order.colCategory')}
             value={category}
             onChange={(e) => reset(setCategory)(e.target.value)}
-            sx={{ minWidth: 200 }}
+            fullWidth={false}
+            sx={{ flex: '2 1 200px' }}
           >
             <MenuItem value="">{t('common.all')}</MenuItem>
             {refs.named('categories').map((c) => (
@@ -138,73 +263,247 @@ export default function AdminProductsPage() {
               </MenuItem>
             ))}
           </TextField>
+          <ViewToggle value={view} onChange={setView} />
         </Stack>
-        <TableContainer>
-          <Table size="small" aria-label={t('nav.products')}>
-            <TableHead>
-              <TableRow>
-                <TableCell>{t('order.colPhoto')}</TableCell>
-                <TableCell>{t('order.colProduct')}</TableCell>
-                <TableCell>{t('order.colCategory')}</TableCell>
-                <TableCell>{t('common.status')}</TableCell>
-                <TableCell align="right">{t('prod.barcodes')}</TableCell>
-                <TableCell align="right">{t('order.colStock')}</TableCell>
-              </TableRow>
-            </TableHead>
-            {list.isPending ? (
-              <TableSkeleton cols={6} />
-            ) : (
-              <TableBody>
-                {items.map((p) => (
-                  <TableRow
-                    key={p.sd_id}
-                    hover
-                    tabIndex={0}
-                    role="button"
-                    aria-label={`${t('prod.open')}: ${p.name}`}
-                    onClick={() => setSelected(p)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') setSelected(p);
-                    }}
-                    sx={{ cursor: 'pointer' }}
+
+        <Stack
+          direction="row"
+          alignItems="center"
+          spacing={1}
+          useFlexGap
+          flexWrap="wrap"
+          sx={{ px: 2, pb: 1, minHeight: 44 }}
+          data-testid="bulk-bar"
+        >
+          {view === 'grid' && pageCheckbox}
+          {view === 'grid' && <Typography variant="body2">{t('prod.selectPage')}</Typography>}
+          {picked.size > 0 && (
+            <>
+              <Typography variant="body2" fontWeight={600}>
+                {t('prod.selected', { count: picked.size })}
+              </Typography>
+              {canWrite && (
+                <>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    startIcon={<DeleteOutlineIcon />}
+                    onClick={() => setDialog('hide')}
                   >
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      <ProductThumb name={p.name} thumbUrl={p.thumb_url} imageUrl={p.image_url} />
-                    </TableCell>
-                    <TableCell>
-                      <Typography variant="body2" fontWeight={600}>
-                        {p.name}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {p.code ?? p.sd_id}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>{p.category_name ?? '—'}</TableCell>
-                    <TableCell>
-                      <Stack direction="row" spacing={0.5}>
-                        <Chip
-                          size="small"
-                          color={p.active ? 'success' : 'default'}
-                          label={p.active ? t('prod.active') : t('prod.inactive')}
-                        />
-                        {p.hidden && <Chip size="small" color="warning" label={t('prod.hidden')} />}
-                      </Stack>
-                    </TableCell>
-                    <TableCell align="right">{p.barcodes.length}</TableCell>
-                    <TableCell align="right">
-                      {formatAmount(p.stock.reduce((a, s) => a + s.quantity, 0))}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
+                    {t('prod.bulkHide')}
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<VisibilityIcon />}
+                    onClick={() => setDialog('show')}
+                  >
+                    {t('prod.bulkShow')}
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<NoteAltOutlinedIcon />}
+                    onClick={() => {
+                      setNoteText('');
+                      setDialog('note');
+                    }}
+                  >
+                    {t('prod.bulkNote')}
+                  </Button>
+                </>
+              )}
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<DownloadIcon />}
+                disabled={exportXlsx.isPending}
+                onClick={() => exportXlsx.mutate()}
+              >
+                {t('prod.bulkExport')}
+              </Button>
+              <Button size="small" onClick={clearSelection}>
+                {t('prod.clearSelection')}
+              </Button>
+            </>
+          )}
+        </Stack>
+        {pageAll && total > items.length && (
+          <Alert severity="info" icon={false} sx={{ mx: 2, mb: 1, py: 0 }}>
+            {allMatching ? (
+              <>
+                {t('prod.allSelected', { count: picked.size })}{' '}
+                <Button size="small" onClick={clearSelection}>
+                  {t('prod.clearSelection')}
+                </Button>
+              </>
+            ) : (
+              <>
+                {t('prod.pageSelected', { count: items.length })}{' '}
+                <Button
+                  size="small"
+                  disabled={matching.isPending}
+                  onClick={() => matching.mutate()}
+                >
+                  {t('prod.selectAllMatching', { count: total })}
+                </Button>
+              </>
             )}
-          </Table>
-        </TableContainer>
+          </Alert>
+        )}
+
+        {view === 'list' ? (
+          <TableContainer>
+            <Table size="small" aria-label={t('nav.products')}>
+              <TableHead>
+                <TableRow>
+                  <TableCell padding="checkbox">{pageCheckbox}</TableCell>
+                  <TableCell>{t('order.colPhoto')}</TableCell>
+                  <TableCell>{t('order.colProduct')}</TableCell>
+                  <TableCell>{t('order.colCategory')}</TableCell>
+                  <TableCell>{t('common.status')}</TableCell>
+                  <TableCell align="right">{t('prod.barcodes')}</TableCell>
+                  <TableCell align="right">{t('order.colStock')}</TableCell>
+                </TableRow>
+              </TableHead>
+              {list.isPending ? (
+                <TableSkeleton cols={7} />
+              ) : (
+                <TableBody>
+                  {items.map((p) => (
+                    <TableRow
+                      key={p.sd_id}
+                      hover
+                      selected={picked.has(p.sd_id)}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`${t('prod.open')}: ${p.name}`}
+                      onClick={() => setSelected(p)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') setSelected(p);
+                      }}
+                      sx={{ cursor: 'pointer' }}
+                    >
+                      <TableCell padding="checkbox">{rowCheckbox(p)}</TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <ProductThumb name={p.name} thumbUrl={p.thumb_url} imageUrl={p.image_url} />
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2" fontWeight={600}>
+                          {p.name}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {p.code ?? p.sd_id}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>{p.category_name ?? '—'}</TableCell>
+                      <TableCell>
+                        <StatusChips p={p} />
+                      </TableCell>
+                      <TableCell align="right">{p.barcodes.length}</TableCell>
+                      <TableCell align="right">{formatAmount(stockTotal(p))}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              )}
+            </Table>
+          </TableContainer>
+        ) : (
+          <Box
+            component="ul"
+            aria-label={t('nav.products')}
+            sx={{
+              listStyle: 'none',
+              m: 0,
+              px: 2,
+              py: 1,
+              display: 'grid',
+              gap: 1.5,
+              gridTemplateColumns: {
+                xs: 'repeat(2, minmax(0, 1fr))',
+                sm: 'repeat(3, minmax(0, 1fr))',
+                md: 'repeat(4, minmax(0, 1fr))',
+                lg: 'repeat(6, minmax(0, 1fr))',
+              },
+            }}
+          >
+            {items.map((p) => {
+              const on = picked.has(p.sd_id);
+              return (
+                <Card
+                  component="li"
+                  key={p.sd_id}
+                  variant="outlined"
+                  sx={{
+                    position: 'relative',
+                    borderColor: on ? 'primary.main' : 'divider',
+                    bgcolor: on ? 'action.selected' : 'background.paper',
+                  }}
+                >
+                  {rowCheckbox(p, {
+                    position: 'absolute',
+                    top: 10,
+                    left: 10,
+                    zIndex: 1,
+                    p: 0.25,
+                    bgcolor: 'background.paper',
+                    borderRadius: 1,
+                    '&:hover': { bgcolor: 'background.paper' },
+                  })}
+                  <Box sx={{ p: 1, pb: 0 }}>
+                    <ProductThumb
+                      fill
+                      name={p.name}
+                      thumbUrl={p.thumb_url}
+                      imageUrl={p.image_url}
+                    />
+                  </Box>
+                  <CardActionArea
+                    onClick={() => setSelected(p)}
+                    aria-label={`${t('prod.open')}: ${p.name}`}
+                    sx={{ p: 1, display: 'flex', flexDirection: 'column', alignItems: 'stretch' }}
+                  >
+                    <Typography
+                      variant="body2"
+                      fontWeight={600}
+                      title={p.name ?? undefined}
+                      sx={{
+                        display: '-webkit-box',
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden',
+                        minHeight: '2.86em',
+                        lineHeight: 1.43,
+                      }}
+                    >
+                      {p.name}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" noWrap>
+                      {p.code ?? p.sd_id} · {p.category_name ?? '—'}
+                    </Typography>
+                    <Stack
+                      direction="row"
+                      justifyContent="space-between"
+                      alignItems="center"
+                      sx={{ mt: 0.75 }}
+                    >
+                      <StatusChips p={p} />
+                      <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
+                        {t('prod.stockTotal')}: {formatAmount(stockTotal(p))}
+                      </Typography>
+                    </Stack>
+                  </CardActionArea>
+                </Card>
+              );
+            })}
+          </Box>
+        )}
         {list.isError && <ErrorState error={list.error} onRetry={() => void list.refetch()} />}
         {list.isSuccess && items.length === 0 && <EmptyState title={t('prod.empty')} />}
         <TablePagination
           component="div"
-          count={list.data?.total ?? 0}
+          count={total}
           page={paging.page}
           rowsPerPage={paging.pageSize}
           onPageChange={(_, p) => paging.setPage(p)}
@@ -216,10 +515,48 @@ export default function AdminProductsPage() {
       </Paper>
       <ProductDrawer
         product={selected}
-        canWrite={can('products.write')}
+        canWrite={canWrite}
         onClose={() => setSelected(null)}
         onChange={setSelected}
       />
+      <Dialog open={dialog !== null} onClose={() => setDialog(null)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontSize: '1.05rem' }}>
+          {dialog === 'hide' && t('prod.bulkConfirmHide', { count: picked.size })}
+          {dialog === 'show' && t('prod.bulkConfirmShow', { count: picked.size })}
+          {dialog === 'note' && t('prod.bulkNoteTitle', { count: picked.size })}
+        </DialogTitle>
+        <DialogContent>
+          {dialog === 'hide' && (
+            <Typography variant="body2" color="text.secondary">
+              {t('prod.bulkConfirmHideHint')}
+            </Typography>
+          )}
+          {dialog === 'note' && (
+            <TextField
+              autoFocus
+              multiline
+              minRows={2}
+              label={t('prod.note')}
+              value={noteText}
+              onChange={(e) => setNoteText(e.target.value)}
+              helperText={t('prod.bulkNoteHint')}
+              slotProps={{ htmlInput: { maxLength: 1000 } }}
+              sx={{ mt: 1 }}
+            />
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDialog(null)}>{t('common.cancel')}</Button>
+          <Button
+            variant="contained"
+            color={dialog === 'hide' ? 'error' : 'primary'}
+            disabled={bulk.isPending}
+            onClick={applyDialog}
+          >
+            {dialog === 'note' ? t('common.save') : t('common.confirm')}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </>
   );
 }

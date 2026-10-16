@@ -214,3 +214,24 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   }
   return res.data as T;
 }
+
+/** POST a JSON body (with the realm's CSRF token) and return the response as a file Blob. */
+export async function postBlob(path: string, body: unknown): Promise<Blob> {
+  const realm = realmOf(path);
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = realm ? csrfTokens[realm] : null;
+  if (token) headers['X-CSRF-Token'] = token;
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError(0, 'network_error', path);
+  }
+  if (!res.ok) throw new ApiError(res.status, `HTTP ${res.status}`, path);
+  return res.blob();
+}

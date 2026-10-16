@@ -1,6 +1,7 @@
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
+import PrintIcon from '@mui/icons-material/Print';
 import ReplayIcon from '@mui/icons-material/Replay';
 import SaveIcon from '@mui/icons-material/Save';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
@@ -47,6 +48,7 @@ import { PageHeader } from '@/components/PageHeader';
 import { ErrorState } from '@/components/States';
 import { AddFromCatalogDialog, type CatalogSource } from '@/features/orders/AddFromCatalogDialog';
 import { CategorySummary } from '@/features/orders/CategorySummary';
+import { InvoiceDialog } from '@/features/orders/InvoiceDialog';
 import { OrderLinesTable } from '@/features/orders/OrderLinesTable';
 import { StateChip } from '@/features/orders/StateChip';
 import {
@@ -120,7 +122,7 @@ export default function AdminOrderDetailPage() {
 }
 
 function OrderDetail({ order }: { order: AdminOrder }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const theme = useTheme();
   const mobile = useMediaQuery(theme.breakpoints.down('sm'));
   const can = useCan();
@@ -139,7 +141,7 @@ function OrderDetail({ order }: { order: AdminOrder }) {
 
   const [draft, setDraft] = useState<Draft>(() => draftOf(order));
   const [problems, setProblems] = useState<OrderProblem[]>([]);
-  const [dialog, setDialog] = useState<'status' | 'delete' | 'catalog' | null>(null);
+  const [dialog, setDialog] = useState<'status' | 'delete' | 'catalog' | 'invoice' | null>(null);
   const [statusValue, setStatusValue] = useState<number>(order.sd_status ?? 1);
   const [statusDate, setStatusDate] = useState('');
 
@@ -404,13 +406,37 @@ function OrderDetail({ order }: { order: AdminOrder }) {
   const canStatus = canWrite && order.state === 'sent';
   const canDelete = canCancel && order.state !== 'deleted' && order.state !== 'submitting';
 
+  const hasInvoice = !!order.sd_id && (order.state === 'sent' || order.state === 'cancelled');
+
   return (
     <>
+      {hasInvoice && (
+        <InvoiceDialog
+          open={dialog === 'invoice'}
+          onClose={() => setDialog(null)}
+          queryKey={['admin', 'invoice', order.public_id, order.version]}
+          load={() => adminOrdersApi.invoice(order.public_id)}
+          pdfUrl={adminOrdersApi.invoicePdfUrl(
+            order.public_id,
+            i18n.language === 'uz' ? 'uz' : 'ru',
+          )}
+          fullScreen={mobile}
+        />
+      )}
       <PageHeader
         title={order.code}
         subtitle={`${order.client.name ?? order.client.sd_id} · ${order.link.name}`}
         actions={
           <>
+            {hasInvoice && (
+              <Button
+                startIcon={<PrintIcon />}
+                variant="outlined"
+                onClick={() => setDialog('invoice')}
+              >
+                {t('invoice.open')}
+              </Button>
+            )}
             {canResend && (
               <Button
                 startIcon={<ReplayIcon />}

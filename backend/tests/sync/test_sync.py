@@ -20,6 +20,7 @@ from app.models import (
     SdWarehouse,
     SyncRun,
 )
+from app.sync.products import media_url, sd_origin
 from app.sync.service import ENTITIES, run_sync
 from tests.conftest import ok, sd_error
 from tests.sync.conftest import FakeSD, client, ent, product, stock_resp
@@ -97,6 +98,39 @@ async def test_references_empty_response_does_not_deactivate(
 
 
 # ------------------------------------------------------------------ products
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("/upload/adtProduct/a.jpeg", "https://sd.example/upload/adtProduct/a.jpeg"),
+        ("https://cdn.example/a.jpeg", "https://cdn.example/a.jpeg"),
+        ("http://i/1.jpg", "http://i/1.jpg"),
+        ("  ", None),
+        (None, None),
+        ("//evil.example/a.jpeg", None),
+        ("javascript:alert(1)", None),
+        ("a.jpeg", None),
+    ],
+)
+def test_media_url(value: Any, expected: str | None) -> None:
+    assert media_url(value, "https://sd.example") == expected
+
+
+def test_sd_origin() -> None:
+    assert sd_origin("https://buxdiler.salesdoc.io/api/v2/") == "https://buxdiler.salesdoc.io"
+
+
+async def test_products_relative_image_paths_become_absolute(
+    sync_ctx: Any, fake_sd: FakeSD, session: AsyncSession
+) -> None:
+    raw = product("p1", imageUrl="/upload/adtProduct/p1.jpeg", thumbUrl="/upload/t/p1.jpeg")
+    fake_sd.set_list("getProduct", "product", [raw], paged=True)
+    assert (await run_sync(sync_ctx, "products")).status == "ok"
+    p1 = (await session.scalars(select(SdProduct))).one()
+    origin = sd_origin(sync_ctx.settings.SD_BASE_URL)
+    assert p1.image_url == f"{origin}/upload/adtProduct/p1.jpeg"
+    assert p1.thumb_url == f"{origin}/upload/t/p1.jpeg"
 
 
 async def test_products_upsert_barcodes_admin_preserved(

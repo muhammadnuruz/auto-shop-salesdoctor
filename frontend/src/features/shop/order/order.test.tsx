@@ -1,9 +1,9 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SETTINGS_KEY } from '@/features/orders/useOrderSettings';
-import { catalogItem, ORDER_ID, orderFixture, orderLine } from '@/test/fixtures';
+import { catalogItem, invoiceFixture, ORDER_ID, orderFixture, orderLine } from '@/test/fixtures';
 import { FakeOrders } from '@/test/orderServer';
 import { server } from '@/test/server';
 import { renderApp } from '@/test/utils';
@@ -225,6 +225,53 @@ describe('order screen: submit', () => {
     return user;
   };
 
+  it('sent: the waybill opens from Sales Doctor data, with print and PDF', async () => {
+    const fake = new FakeOrders(withLine());
+    const invoiceCalls: string[] = [];
+    server.use(
+      http.get('*/api/shop/orders/:id/invoice', ({ params }) => {
+        invoiceCalls.push(String(params.id));
+        return HttpResponse.json(invoiceFixture());
+      }),
+    );
+    const user = await submitFlow(fake);
+    await user.click(await screen.findByRole('button', { name: 'Накладная' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Печать накладной' });
+    const paper = await within(dialog).findByTestId('invoice');
+    expect(paper).toHaveTextContent('НАКЛАДНАЯ № 53146');
+    expect(paper).toHaveTextContent('16.10.2026 09:46');
+    expect(paper).toHaveTextContent('Мансур');
+    expect(within(paper).getByTestId('invoice-total')).toHaveTextContent('17 000 сум');
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: 'Скачать PDF' })).toHaveAttribute(
+      'href',
+      `/api/shop/orders/${ORDER_ID}/invoice.pdf?lang=ru`,
+    );
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    await user.click(within(dialog).getByRole('button', { name: 'Печатать накладную' }));
+    expect(print).toHaveBeenCalledOnce();
+    expect(document.body).toHaveClass('printing-invoice');
+    window.dispatchEvent(new Event('afterprint'));
+    expect(document.body).not.toHaveClass('printing-invoice');
+    print.mockRestore();
+    expect(invoiceCalls).toEqual([ORDER_ID]);
+  });
+
+  it('waybill built from the local copy says so', async () => {
+    const fake = new FakeOrders(withLine());
+    server.use(
+      http.get('*/api/shop/orders/:id/invoice', () =>
+        HttpResponse.json(invoiceFixture({ source: 'local', warning: 'sd_unavailable' })),
+      ),
+    );
+    const user = await submitFlow(fake);
+    await user.click(await screen.findByRole('button', { name: 'Накладная' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Печать накладной' });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'Sales Doctor сейчас недоступен',
+    );
+  });
+
   it('sent: shows the SD number with "Новый заказ" / "Повторить"', async () => {
     const fake = new FakeOrders(withLine());
     await submitFlow(fake);
@@ -430,6 +477,73 @@ describe('order screen: add from catalog', () => {
     expect(bodies['/lines/pa']).toMatchObject({ blocks: 1, pieces: 1 });
     expect(bodies['/lines/pb']).toMatchObject({ blocks: 0, pieces: 1 });
   });
+
+  it('switches to the card view, remembers it, and adds from a card', async () => {
+    localStorage.removeItem('catalog-view');
+    const a = catalogItem({ product_ref: 'pa', name: 'Filter A' });
+    const fake = new FakeOrders({}, [a]);
+    await open(fake);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Добавить из списка' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Добавить из списка' });
+    expect(await within(dialog).findByRole('table')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Списком' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    await user.click(within(dialog).getByRole('button', { name: 'Карточками' }));
+    expect(within(dialog).queryByRole('table')).not.toBeInTheDocument();
+    const cards = within(dialog).getByRole('list', { name: 'Добавить из списка' });
+    expect(within(cards).getAllByRole('listitem')).toHaveLength(1);
+    expect(localStorage.getItem('catalog-view')).toBe('grid');
+
+    await user.click(within(cards).getByRole('button', { name: 'В штуках: Filter A +' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Добавить (1)' }));
+    await waitFor(() => expect(fake.callsTo('PATCH', '/lines/')).toHaveLength(1), {
+      timeout: 3000,
+    });
+    localStorage.removeItem('catalog-view');
+  });
+});
+
+describe('order screen: select all in the catalog', () => {
+  it('picks every in-stock product (1 piece each) and adds them in one bulk request', async () => {
+    const items = Array.from({ length: 12 }, (_, i) =>
+      catalogItem({ product_ref: `p${i}`, name: `Item ${i}`, stock: i === 3 ? 0 : 50 }),
+    );
+    const fake = new FakeOrders({}, items);
+    await open(fake);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Добавить из списка' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Добавить из списка' });
+    await within(dialog).findByText('Item 0');
+    await user.click(within(dialog).getAllByRole('checkbox', { name: 'Выбрать все' })[0]!);
+    expect(await within(dialog).findByText('Выбрано: 11')).toBeInTheDocument();
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('без остатка пропущено: 1');
+    expect(within(dialog).getByRole('checkbox', { name: 'Выбрать: Item 3' })).not.toBeChecked();
+
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Выбрать: Item 0' }));
+    expect(within(dialog).getByText('Выбрано: 10')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Добавить (10)' }));
+
+    await waitFor(() => expect(fake.callsTo('POST', '/import/apply')).toHaveLength(1));
+    const body = fake.callsTo('POST', '/import/apply')[0]!.body as {
+      lines: { product_ref: string; blocks: number; pieces: number }[];
+    };
+    expect(body.lines).toHaveLength(10);
+    expect(body.lines.every((l) => l.blocks === 0 && l.pieces === 1)).toBe(true);
+    expect(body.lines.map((l) => l.product_ref)).not.toContain('p3');
+    expect(fake.callsTo('PATCH', '/lines/')).toHaveLength(0);
+  });
+
+  it('desktop: the total + submit bar is sticky', async () => {
+    const fake = new FakeOrders({ lines: [orderLine()] });
+    await open(fake);
+    const bar = await screen.findByTestId('total-bar');
+    expect(bar).toHaveStyle({ position: 'sticky', bottom: '0px' });
+    expect(within(bar).getByRole('button', { name: 'Отправить заказ' })).toBeInTheDocument();
+  });
 });
 
 describe('order screen: layouts', () => {
@@ -524,6 +638,24 @@ describe('new order + read-only order', () => {
     renderApp('/s/demo-shop/order/new');
     await screen.findByTestId('scanner-input');
     expect(fake.callsTo('POST', '/orders')).toHaveLength(1);
+  });
+
+  it('scanning right after /order/new uses the created order version (no refetch needed)', async () => {
+    const fake = new FakeOrders({ version: 4 });
+    fake.install();
+    // the background refetch is slow: the scan must not wait for it nor send version 0
+    server.use(
+      http.get(`*/api/shop/orders/${ORDER_ID}`, async () => {
+        await delay(3000);
+        return HttpResponse.json(fake.order);
+      }),
+    );
+    renderApp('/s/demo-shop/order/new');
+    const scanner = await screen.findByTestId('scanner-input');
+    const user = userEvent.setup();
+    await user.type(scanner, '4780000000011{Enter}');
+    await waitFor(() => expect(fake.callsTo('POST', '/lines/scan')).toHaveLength(1));
+    expect(fake.callsTo('POST', '/lines/scan')[0]?.body).toMatchObject({ version: 4 });
   });
 
   it('too many drafts: shows the server reason with a way out', async () => {

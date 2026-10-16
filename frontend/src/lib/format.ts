@@ -39,3 +39,12 @@ export function localInputToIso(value: string): string | null {
   const d = dayjs(value);
   return d.isValid() ? d.toISOString() : null;
 }
+
+/** `2026-10-16 09:46:06` -> `16.10.2026 09:46` */
+export function formatInvoiceDate(value: string | null): string {
+  if (!value) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(value);
+  if (!m) return value;
+  const day = `${m[3]}.${m[2]}.${m[1]}`;
+  return m[4] ? `${day} ${m[4]}:${m[5]}` : day;
+}

@@ -23,7 +23,21 @@ export function PrefsControls() {
         value={lang}
         aria-label={t('prefs.language')}
         onChange={(_, v: Lang | null) => v && setLanguage(v)}
-        color="primary"
+        // Inherit the surrounding text colour: on the shop AppBar (primary or link branding
+        // colour) a `color="primary"` selected button would be primary-on-primary, i.e. invisible.
+        sx={{
+          '& .MuiToggleButton-root': {
+            color: 'inherit',
+            borderColor: 'color-mix(in srgb, currentColor 45%, transparent)',
+            fontWeight: 500,
+            '&:hover': { bgcolor: 'color-mix(in srgb, currentColor 10%, transparent)' },
+            '&.Mui-selected, &.Mui-selected:hover': {
+              color: 'inherit',
+              fontWeight: 700,
+              bgcolor: 'color-mix(in srgb, currentColor 22%, transparent)',
+            },
+          },
+        }}
       >
         <ToggleButton value="ru" aria-label="Русский" sx={{ px: 1 }}>
           RU

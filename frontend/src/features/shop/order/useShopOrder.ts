@@ -61,6 +61,9 @@ export function useShopOrder(orderId: string) {
   const lastOrder = useRef<Order | undefined>(undefined);
   useEffect(() => {
     lastOrder.current = order;
+    // the order may come straight from the cache (seeded by /order/new) without running the
+    // queryFn above, so keep the version in step with whatever data is shown
+    if (order && order.version > versionRef.current) versionRef.current = order.version;
   });
 
   const apply = useCallback(

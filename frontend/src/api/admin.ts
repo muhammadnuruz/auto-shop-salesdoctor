@@ -1,5 +1,6 @@
-import { ApiError, rawRequest, request, setCsrfToken, type RawResponse } from './http';
+import { ApiError, postBlob, rawRequest, request, setCsrfToken, type RawResponse } from './http';
 import type {
+  Invoice,
   AppSettings,
   AppSettingsUpdate,
   AuditFacets,
@@ -231,6 +232,8 @@ export const adminOrdersApi = {
     return res.blob();
   },
   get: (id: string, signal?: AbortSignal) => request<AdminOrder>(`${A}/orders/${id}`, { signal }),
+  invoice: (id: string) => request<Invoice>(`${A}/orders/${id}/invoice`),
+  invoicePdfUrl: (id: string, lang: string) => `${A}/orders/${id}/invoice.pdf?lang=${lang}`,
   /** 200 saved/sent, 202 outcome unknown, 4xx/5xx structured problems. */
   edit: (id: string, body: AdminOrderPatch): Promise<AdminOrderResponse> =>
     rawRequest(`${A}/orders/${id}`, { method: 'PATCH', body }),
@@ -262,6 +265,16 @@ export interface ProductListParams extends Page {
 export const productsApi = {
   list: (p: ProductListParams, signal?: AbortSignal) =>
     request<Paged<AdminProduct>>(`${A}/products`, { query: { ...p }, signal }),
+  /** SD ids of every product matching the list filters (for "select all") */
+  ids: (p: Omit<ProductListParams, 'limit' | 'offset' | 'price_type' | 'warehouse'>) =>
+    request<{ total: number; sd_ids: string[] }>(`${A}/products/ids`, { query: { ...p } }),
+  /** Only the fields present are changed; `note: null` clears the note. */
+  bulk: (sdIds: string[], patch: { hidden?: boolean; note?: string | null }) =>
+    request<{ updated: number; not_found: number }>(`${A}/products/bulk`, {
+      method: 'POST',
+      body: { sd_ids: sdIds, ...patch },
+    }),
+  exportXlsx: (sdIds: string[]) => postBlob(`${A}/products/export.xlsx`, { sd_ids: sdIds }),
   patch: (sdId: string, body: { hidden?: boolean; note?: string | null }) =>
     request<AdminProduct>(`${A}/products/${encodeURIComponent(sdId)}`, {
       method: 'PATCH',

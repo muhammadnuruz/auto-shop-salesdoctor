@@ -4,7 +4,7 @@ import io
 import uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
@@ -13,8 +13,17 @@ from pydantic import BaseModel, Field
 from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AdminContext, DbDep, MetaDep, ServicesDep, require
-from app.api.schemas import AdminOrderListOut, AdminOrderOut
+from app.api.deps import (
+    AdminContext,
+    DbDep,
+    MetaDep,
+    RedisDep,
+    SdDep,
+    ServicesDep,
+    SettingsDep,
+    require,
+)
+from app.api.schemas import AdminOrderListOut, AdminOrderOut, InvoiceOut
 from app.core.xlsx import cell
 from app.domain.quantity import MAX_BLOCKS, MAX_PIECES
 from app.integrations.salesdoctor import SDError
@@ -23,6 +32,8 @@ from app.models.orders import ORDER_STATES
 from app.services import audit
 from app.services import orders as svc
 from app.services.eligibility import parse_settings
+from app.services.invoice import build_invoice
+from app.services.invoice_pdf import pdf_response
 from app.services.order_flow import (
     AdminEditOutcome,
     OrderLock,
@@ -36,6 +47,7 @@ from app.services.order_flow import (
 from app.services.orders import Actor, LineInput, problem
 from app.services.stock_fresh import apply_to_mirror, fetch_warehouse_stock
 from app.sync.common import SD_TZ
+from app.sync.products import sd_origin
 
 router = APIRouter(prefix="/orders", tags=["admin-orders"])
 ReadDep = Annotated[AdminContext, Depends(require("orders.read"))]
@@ -318,6 +330,34 @@ async def _detail(
 async def get_order(public_id: uuid.UUID, ctx: ReadDep, db: DbDep) -> dict[str, Any]:
     order = await svc.get_order(db, public_id)
     return await _detail(db, order)
+
+
+@router.get("/{public_id}/invoice", response_model=InvoiceOut)
+async def get_invoice(
+    public_id: uuid.UUID, ctx: ReadDep, db: DbDep, sd: SdDep, redis: RedisDep
+) -> dict[str, Any]:
+    order = await svc.get_order(db, public_id)
+    return await build_invoice(db, sd, redis, order)
+
+
+@router.get("/{public_id}/invoice.pdf")
+async def get_invoice_pdf(
+    public_id: uuid.UUID,
+    ctx: ReadDep,
+    db: DbDep,
+    sd: SdDep,
+    redis: RedisDep,
+    settings: SettingsDep,
+    lang: Literal["ru", "uz"] = "ru",
+) -> Response:
+    order = await svc.get_order(db, public_id)
+    inv = await build_invoice(db, sd, redis, order)
+    return await pdf_response(
+        inv,
+        sd_origin=sd_origin(settings.SD_BASE_URL),
+        user_agent=settings.SD_USER_AGENT,
+        lang=lang,
+    )
 
 
 # ---------------------------------------------------------------------------------- edit

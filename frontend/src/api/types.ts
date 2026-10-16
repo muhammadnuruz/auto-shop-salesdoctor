@@ -382,3 +382,40 @@ export interface AppSettingsUpdate {
     events?: NotifyEvent[];
   };
 }
+
+// ---- waybill (накладная) ------------------------------------------------------------------------
+export interface InvoiceLine {
+  position: number;
+  product_ref: string;
+  name: string | null;
+  thumb_url: string | null;
+  unit: string | null;
+  pack_quantity: number | null;
+  blocks: number;
+  quantity: number;
+  price: number;
+  discount: number;
+  sum: number;
+}
+
+export interface Invoice {
+  source: 'sd' | 'local';
+  warning: 'sd_unavailable' | 'sd_not_found' | null;
+  number: string;
+  sd_id: string | null;
+  code: string;
+  sd_status: number | null;
+  date: string | null;
+  shipment_date: string | null;
+  client: { name: string | null; phone: string | null; address: string | null };
+  agent: string | null;
+  warehouse: string | null;
+  price_type: string | null;
+  trade: string | null;
+  comment: string | null;
+  lines: InvoiceLine[];
+  total_qty: number;
+  total_sum: number;
+  discount_sum: number;
+  total_due: number;
+}
